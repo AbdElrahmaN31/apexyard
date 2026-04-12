@@ -1,0 +1,38 @@
+# ShellCheck — dogfood apexstack itself
+#
+# Runs shellcheck against the hook scripts under .claude/hooks/ to catch
+# portability bugs, quoting mistakes, and common shell pitfalls. The hook
+# scripts are the mechanical enforcement layer for the apexstack workflow,
+# so any bug there weakens the whole stack.
+
+name: ShellCheck
+
+on:
+  pull_request:
+    paths:
+      - ".claude/hooks/**"
+      - ".github/workflows/shellcheck.yml"
+  push:
+    branches: [main]
+    paths:
+      - ".claude/hooks/**"
+      - ".github/workflows/shellcheck.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  shellcheck:
+    name: shellcheck .claude/hooks
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Run ShellCheck
+        uses: ludeeus/action-shellcheck@2.0.0
+        with:
+          scandir: "./.claude/hooks"
+          severity: warning
+          ignore_paths: >-
+            .claude/hooks/README.md

@@ -1,0 +1,40 @@
+# Markdown Lint — dogfood apexstack itself
+#
+# Catches broken markdown and inconsistent headings across the repo.
+# Uses a relaxed ruleset via .markdownlint.json at the repo root — we care
+# about real problems (bad links, malformed tables, duplicate headings) and
+# not cosmetic nits (line length, trailing spaces, emphasis style).
+
+name: Markdown Lint
+
+on:
+  pull_request:
+    paths:
+      - "**/*.md"
+      - ".markdownlint.json"
+      - ".github/workflows/markdown-lint.yml"
+  push:
+    branches: [main]
+    paths:
+      - "**/*.md"
+      - ".markdownlint.json"
+      - ".github/workflows/markdown-lint.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  markdownlint:
+    name: markdownlint-cli2
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Run markdownlint-cli2
+        uses: DavidAnson/markdownlint-cli2-action@v16
+        with:
+          globs: |
+            **/*.md
+            #node_modules
+            #.git
