@@ -161,6 +161,12 @@ Closes #123
 
 NEVER use `git add -A` or `git add .` -- always add specific files.
 
+### Branch model — framework only
+
+The apexyard framework repo (`me2resh/apexyard`) uses a **release-cut** branch model: daily PRs merge to `dev`; `main` only receives release PRs from `dev` (tagged with semver on each merge). This is sometimes called gitflow-lite — it is **not** full git flow (no `release/*` / `hotfix/*` branches). See `docs/release-process.md` and AgDR-0007.
+
+**This is a framework-only pattern.** Managed projects under apexyard governance (entries in `apexyard.projects.yaml`) stay **trunk-based** — PRs merge to `main` directly because they have no downstream consumers. Do **NOT** cargo-cult the dev/main split into project templates, project scaffolds, or `/handover` output. The `/release` skill is the only piece that's framework-specific and refuses to run on a managed project.
+
 ---
 
 ## CLAUDE CODE INTEGRATION
@@ -206,6 +212,7 @@ ApexYard ships with a `.claude/` directory containing the Claude Code primitives
 | `/handover` | Onboard an external repo into ApexYard management (includes per-project discovery) |
 | `/c4` | Generate C4 L1 (System Context) + L2 (Container) Mermaid diagrams for a project by reading its codebase |
 | `/update` | Sync the ops fork with upstream me2resh/apexyard — preview, merge-or-rebase, leaves a sync branch ready to push |
+| `/release` | (Framework-only) Cut a new apexyard release — diff dev against main, pick a semver bump, generate a CHANGELOG, open the release PR, and tag after merge |
 | `/projects` | List all managed projects from the registry with status |
 | `/inbox` | Items needing your attention — PRs, issues, comments, blockers |
 | `/status` | Current snapshot — git, CI, in-progress work |
