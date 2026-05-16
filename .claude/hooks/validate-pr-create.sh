@@ -26,7 +26,16 @@ fi
 
 ERRORS=""
 
-# Extract --title value (macOS-compatible, no grep -P)
+# Extract --title value (macOS-compatible, no grep -P).
+#
+# Kept as the original non-greedy `[^"']*` form: PR titles are short,
+# single-line, and conventionally do NOT contain embedded `"` or `'`
+# (they're command-line arguments and gh would have shell-escape
+# friction). The greedy + flag-boundary fix used in the body extractors
+# (me2resh/apexyard#227) is NOT applied here on purpose — when the
+# command has a multi-line `--body "$(cat <<'EOF' ... EOF)"` after the
+# title, greedy match over-consumes the body content as part of the
+# title value. Non-greedy is correct for this position.
 TITLE=$(echo "$COMMAND" | sed -n 's/.*--title[[:space:]]*["'"'"']\([^"'"'"']*\)["'"'"'].*/\1/p' | head -1)
 if [ -z "$TITLE" ]; then
   TITLE=$(echo "$COMMAND" | sed -n 's/.*--title[[:space:]]*\([^[:space:]]*\).*/\1/p' | head -1)
