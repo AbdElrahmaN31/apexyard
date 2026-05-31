@@ -8,8 +8,16 @@
 # The MCP vector search returns targeted excerpts from indexed chunks,
 # saving ~3-5x tokens compared to reading full files via grep+Read.
 #
+# IMPORTANT (#469): the advisory is emitted as `hookSpecificOutput.additional
+# Context` JSON on STDOUT (exit 0), NOT stderr. Claude Code does not inject
+# exit-0 stderr into the model's context, so the old stderr banner was
+# invisible to the agent — the exact failure this hook exists to prevent.
+# It is also install-gated: it only nudges when the `apexyard-search` MCP
+# server is actually configured, so adopters without the premium search
+# component fall back to plain grep silently.
+#
 # Wired to: PreToolUse → Bash (no `if` matcher — checks command internally)
-# See: me2resh/apexyard#418
+# See: me2resh/apexyard#418 (original), #469 (additionalContext + install-gate)
 
 set -u
 
@@ -69,18 +77,35 @@ fi
 
 $targets_framework || exit 0
 
-# --- Emit advisory banner ------------------------------------------------
+# --- Install-gate: only nudge if apexyard-search is actually configured -----
+# Resolve the ops fork from this hook's own location, and also honour
+# $APEXYARD_PORTFOLIO_ROOT (split-portfolio mode keeps .mcp.json beside the
+# portfolio). If apexyard-search isn't configured in any candidate .mcp.json,
+# stay silent — the adopter doesn't have the premium search component, so the
+# nudge would be noise. (#469)
 
-cat >&2 <<'BANNER'
+ops_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." 2>/dev/null && pwd)"
 
-💡 MCP search available — consider using it before grep+Read:
+mcp_has_search=false
+for mcp_json in "$ops_root/.mcp.json" "${APEXYARD_PORTFOLIO_ROOT:-}/.mcp.json"; do
+  [ -n "$mcp_json" ] && [ -f "$mcp_json" ] || continue
+  if grep -q 'apexyard-search' "$mcp_json" 2>/dev/null; then
+    mcp_has_search=true
+    break
+  fi
+done
 
-  • search_docs  — framework docs (skills, roles, handbooks, AgDRs, workflows)
-  • search_code  — managed project codebases (workspace clones)
+$mcp_has_search || exit 0
 
-MCP returns targeted excerpts and saves ~3-5x tokens vs reading full files.
-Load with: ToolSearch("select:mcp__apexyard-search__search_docs,mcp__apexyard-search__search_code")
+# --- Emit advisory as additionalContext on stdout (non-blocking) -----------
 
-BANNER
+ADVISORY="apexyard-search MCP is available — prefer mcp__apexyard-search__search_code (managed-project codebases) / search_docs (framework docs) over grep+Read for this search. Semantic, returns targeted excerpts, ~3-5x fewer tokens. Fall back to grep only if MCP returns nothing. Load via ToolSearch(\"select:mcp__apexyard-search__search_code,mcp__apexyard-search__search_docs\")."
+
+jq -n --arg t "$ADVISORY" '{
+  hookSpecificOutput: {
+    hookEventName: "PreToolUse",
+    additionalContext: $t
+  }
+}'
 
 exit 0
