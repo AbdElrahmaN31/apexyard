@@ -47,7 +47,7 @@ apexyard/
 ├── .claude/               # Claude Code primitives (the runnable layer)
 │   ├── settings.json      # Hook wiring (PreToolUse, PostToolUse, SessionStart)
 │   ├── hooks/             # 40 shell scripts — ticket-first, migration gate, two-marker merge gate, red-CI block, secrets scan, branch/PR validation, leak protection, MCP-reindex advisories, upstream-drift banner
-│   ├── rules/             # 11 modular rule files imported via @.claude/rules/* (agdr-decisions, code-standards, git-conventions, leak-protection, parallel-work, plan-mode, pr-quality, pr-workflow, role-triggers, ticket-vocabulary, workflow-gates)
+│   ├── rules/             # 12 modular rule files imported via @.claude/rules/* (agdr-decisions, code-standards, git-conventions, leak-protection, loop-mode, parallel-work, plan-mode, pr-quality, pr-workflow, role-triggers, ticket-vocabulary, workflow-gates)
 │   ├── agents/            # 24 sub-agents — Rex (Code Reviewer), Hakim (Security Auditor), Tariq (Solution Architect), the engineering / product / design / data / security personas, plus utility agents (PR & ticket managers, dependency auditor)
 │   └── skills/            # 59 slash commands — see CLAUDE.md for the full list
 │
@@ -151,6 +151,8 @@ Register even a single repo — the portfolio skills (`/projects`, `/inbox`, `/s
 The hooks fire on every `git` / `gh` command, the portfolio skills aggregate across the registry, and the Code Reviewer agent can be invoked with `/code-review <pr>`.
 
 Full setup guide with directory layout, daily workflow, and FAQ: [`docs/multi-project.md`](docs/multi-project.md).
+
+Keeping a fork current — upgrade in place, when to re-fork instead, and how to preserve your portfolio data either way: [`docs/upgrading.md`](docs/upgrading.md).
 
 ## Why ApexYard?
 
