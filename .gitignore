@@ -20,6 +20,13 @@ onboarding.yaml
 workspace/*/
 !workspace/README.md
 
+# Split-portfolio v2: registry, per-project docs, and ideas backlog live in
+# the private sibling repo (apexyard-portfolio). These paths must never be
+# staged in the public fork — accidental git add would leak private project
+# names onto a public GitHub repo.
+apexyard.projects.yaml
+projects/
+
 # Adopter-specific agent routing (single-fork mode; split-portfolio mode
 # keeps this in the private repo). See docs/multi-project.md § "Centralised
 # agent routing" and docs/agdr/AgDR-0050-agent-runtime-overhaul.md.
