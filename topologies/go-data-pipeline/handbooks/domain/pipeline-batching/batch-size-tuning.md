@@ -14,28 +14,28 @@ paths:
 
 Batching is the difference between a pipeline that processes 100 records/second and one that processes 100,000 records/second. Two rules:
 
-| Rule | Why |
-|---|---|
-| Sinks batch writes when the underlying store supports bulk writes (Postgres COPY, S3 multipart, Kafka batch produce) | Per-record overhead dominates; batching amortises it |
-| Sources batch reads when the upstream supports bulk fetches (Kafka FetchMaxBytes, S3 ListObjects, DB cursor with FetchSize) | Same reason in reverse |
+| Rule                                                                                                                        | Why                                                  |
+|-----------------------------------------------------------------------------------------------------------------------------|------------------------------------------------------|
+| Sinks batch writes when the underlying store supports bulk writes (Postgres COPY, S3 multipart, Kafka batch produce)        | Per-record overhead dominates; batching amortises it |
+| Sources batch reads when the upstream supports bulk fetches (Kafka FetchMaxBytes, S3 ListObjects, DB cursor with FetchSize) | Same reason in reverse                               |
 
 The batch-size knobs:
 
-| Knob | Default | Tunable via |
-|---|---|---|
-| Sink batch size (records) | 100 — 1000 | Config |
-| Sink batch byte limit | 1 MiB | Config |
-| Sink flush interval (max time to hold a partial batch) | 1 — 5 seconds | Config |
-| Source fetch size | 100 — 10000 | Config |
-| Source max bytes per fetch | 1 MiB | Config |
-| Worker pool size (concurrent batches) | 1 — N where N = sink's max parallelism | Config |
+| Knob                                                   | Default                                | Tunable via |
+|--------------------------------------------------------|----------------------------------------|-------------|
+| Sink batch size (records)                              | 100 — 1000                             | Config      |
+| Sink batch byte limit                                  | 1 MiB                                  | Config      |
+| Sink flush interval (max time to hold a partial batch) | 1 — 5 seconds                          | Config      |
+| Source fetch size                                      | 100 — 10000                            | Config      |
+| Source max bytes per fetch                             | 1 MiB                                  | Config      |
+| Worker pool size (concurrent batches)                  | 1 — N where N = sink's max parallelism | Config      |
 
-| Anti-pattern | Why it's broken |
-|---|---|
-| No batching at the sink for a bulk-write-capable store (writing rows one at a time to Postgres) | 100x throughput regression |
-| Batch size hard-coded as a constant — no config | Operator can't tune per-environment |
-| Batch flushed only on size, not on time | Slow streams stall in a half-full batch |
-| Batch flushed only on time, not on size | High-volume streams send tiny batches |
+| Anti-pattern                                                                                          | Why it's broken                         |
+|-------------------------------------------------------------------------------------------------------|-----------------------------------------|
+| No batching at the sink for a bulk-write-capable store (writing rows one at a time to Postgres)       | 100x throughput regression              |
+| Batch size hard-coded as a constant — no config                                                       | Operator can't tune per-environment     |
+| Batch flushed only on size, not on time                                                               | Slow streams stall in a half-full batch |
+| Batch flushed only on time, not on size                                                               | High-volume streams send tiny batches   |
 | Per-record retry within a batch — splits the batch on failure but doesn't track which records were OK | Idempotency violations on partial retry |
 
 ## Why
@@ -139,11 +139,11 @@ func (s *Sink) bulkInsert(ctx context.Context, batch []domain.Record) error {
 
 The right values are workload-dependent. Defaults to start:
 
-| Workload | Batch size | Flush interval |
-|---|---|---|
-| High-volume (>1000 r/s), latency-tolerant | 1000 | 5s |
-| Medium-volume (100 r/s), some latency sensitivity | 100 | 1s |
-| Low-volume (< 10 r/s), latency-sensitive | 10 | 100ms |
-| Event-driven (must propagate within ms) | 1 | n/a |
+| Workload                                          | Batch size | Flush interval |
+|---------------------------------------------------|------------|----------------|
+| High-volume (>1000 r/s), latency-tolerant         | 1000       | 5s             |
+| Medium-volume (100 r/s), some latency sensitivity | 100        | 1s             |
+| Low-volume (< 10 r/s), latency-sensitive          | 10         | 100ms          |
+| Event-driven (must propagate within ms)           | 1          | n/a            |
 
 Measure on production traffic; tune from there.

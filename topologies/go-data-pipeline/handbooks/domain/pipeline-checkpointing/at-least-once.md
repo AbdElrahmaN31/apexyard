@@ -24,19 +24,19 @@ This pipeline guarantees **at-least-once delivery**. Every record is written to 
 
 On restart, the source rewinds to the last committed position. Any records processed but not yet checkpointed are re-processed — hence the **idempotent sink** requirement.
 
-| Source supplies | Pipeline guarantees | Sink must be |
-|---|---|---|
+| Source supplies                      | Pipeline guarantees                                                   | Sink must be                                            |
+|--------------------------------------|-----------------------------------------------------------------------|---------------------------------------------------------|
 | `(Record, Position)` per `Next` call | `Sink.Write` completes successfully before checkpointing the position | Idempotent (write twice = same end state as write once) |
 
 Anti-patterns that violate at-least-once:
 
-| Anti-pattern | Failure mode |
-|---|---|
-| Checkpoint before sink.Write succeeds | Record lost on sink failure |
-| Sink doesn't dedupe on retry | Duplicates land in the downstream system |
-| Source provides no position | Restart re-processes everything from the start (or nothing — both broken) |
-| Checkpoint store has no read-after-write consistency (e.g. eventually-consistent S3 list) | Wrong position on restart |
-| `defer commit()` instead of explicit commit after sink success | Commits even on sink failure if the function returns early |
+| Anti-pattern                                                                              | Failure mode                                                              |
+|-------------------------------------------------------------------------------------------|---------------------------------------------------------------------------|
+| Checkpoint before sink.Write succeeds                                                     | Record lost on sink failure                                               |
+| Sink doesn't dedupe on retry                                                              | Duplicates land in the downstream system                                  |
+| Source provides no position                                                               | Restart re-processes everything from the start (or nothing — both broken) |
+| Checkpoint store has no read-after-write consistency (e.g. eventually-consistent S3 list) | Wrong position on restart                                                 |
+| `defer commit()` instead of explicit commit after sink success                            | Commits even on sink failure if the function returns early                |
 
 ## Why
 

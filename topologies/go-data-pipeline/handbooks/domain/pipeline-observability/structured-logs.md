@@ -21,23 +21,23 @@ slog.Info("event description",
 )
 ```
 
-| Required fields per log line | Why |
-|---|---|
-| A short, fixed event description (`"record processed"`, `"sink flushed"`) | Easy to grep and aggregate |
-| Stage / component name (`"stage", "kafka-source"`) | Filter by stage in observability tool |
-| Record / batch identifier when applicable (`"record_id", id` OR `"batch_size", n`) | Trace a specific failure back to the data |
-| Error field for errors (`"err", err.Error()`) | Don't embed errors in the message string |
-| Latency for timed operations (`"latency_ms", elapsed.Milliseconds()`) | Performance dashboards work without parsing log text |
+| Required fields per log line                                                       | Why                                                  |
+|------------------------------------------------------------------------------------|------------------------------------------------------|
+| A short, fixed event description (`"record processed"`, `"sink flushed"`)          | Easy to grep and aggregate                           |
+| Stage / component name (`"stage", "kafka-source"`)                                 | Filter by stage in observability tool                |
+| Record / batch identifier when applicable (`"record_id", id` OR `"batch_size", n`) | Trace a specific failure back to the data            |
+| Error field for errors (`"err", err.Error()`)                                      | Don't embed errors in the message string             |
+| Latency for timed operations (`"latency_ms", elapsed.Milliseconds()`)              | Performance dashboards work without parsing log text |
 
 Log levels:
 
-| Level | When |
-|---|---|
-| `Debug` | Per-record processing detail; off in production |
-| `Info` | Pipeline lifecycle events (start, stop, flush, checkpoint) — sub-second granularity |
-| `Warn` | Recoverable issues (retry, partial failure, backpressure) |
-| `Error` | Unrecoverable per-record failures, sink writes that failed after all retries |
-| `Fatal` (not in slog — use log.Fatalf in main only) | Pipeline-killing failures at startup |
+| Level                                               | When                                                                                |
+|-----------------------------------------------------|-------------------------------------------------------------------------------------|
+| `Debug`                                             | Per-record processing detail; off in production                                     |
+| `Info`                                              | Pipeline lifecycle events (start, stop, flush, checkpoint) — sub-second granularity |
+| `Warn`                                              | Recoverable issues (retry, partial failure, backpressure)                           |
+| `Error`                                             | Unrecoverable per-record failures, sink writes that failed after all retries        |
+| `Fatal` (not in slog — use log.Fatalf in main only) | Pipeline-killing failures at startup                                                |
 
 ## Why
 

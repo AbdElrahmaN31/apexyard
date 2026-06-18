@@ -7,15 +7,15 @@
 
 Every function that does I/O, runs for non-trivial time, or spawns a goroutine accepts `context.Context` as its first parameter. Propagation rules:
 
-| Rule | Why |
-|---|---|
-| `ctx` is always the first parameter | Convention; tools (`golangci-lint`, IDE refactors) expect it there |
-| Never pass `context.Background()` from inside a function — receive it from caller | Caller might have set a deadline / cancellation that needs to propagate |
-| `context.TODO()` only as a placeholder during refactoring, NEVER in shipped code | `TODO` is a "fix this later" marker, not a sentinel |
-| Functions that spawn goroutines must accept ctx AND propagate it | Otherwise goroutines outlive their caller's cancellation |
-| Check `ctx.Err()` at loop heads in long-running stages | Cancellation only fires when you check |
-| Sleep via `select { case <-time.After: ... case <-ctx.Done(): ... }`, not `time.Sleep` | `time.Sleep` is uncancellable |
-| Don't store ctx in struct fields (except for request-scoped types with documented lifetime) | Struct field outlives the call; cancellation semantics break |
+| Rule                                                                                        | Why                                                                     |
+|---------------------------------------------------------------------------------------------|-------------------------------------------------------------------------|
+| `ctx` is always the first parameter                                                         | Convention; tools (`golangci-lint`, IDE refactors) expect it there      |
+| Never pass `context.Background()` from inside a function — receive it from caller           | Caller might have set a deadline / cancellation that needs to propagate |
+| `context.TODO()` only as a placeholder during refactoring, NEVER in shipped code            | `TODO` is a "fix this later" marker, not a sentinel                     |
+| Functions that spawn goroutines must accept ctx AND propagate it                            | Otherwise goroutines outlive their caller's cancellation                |
+| Check `ctx.Err()` at loop heads in long-running stages                                      | Cancellation only fires when you check                                  |
+| Sleep via `select { case <-time.After: ... case <-ctx.Done(): ... }`, not `time.Sleep`      | `time.Sleep` is uncancellable                                           |
+| Don't store ctx in struct fields (except for request-scoped types with documented lifetime) | Struct field outlives the call; cancellation semantics break            |
 
 ## Why
 

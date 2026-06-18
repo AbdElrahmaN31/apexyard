@@ -13,13 +13,13 @@ internal/domain/  ←  internal/pipeline/  ←  cmd/<name>/
         internal/sources/         internal/sinks/
 ```
 
-| Package | What lives there | CAN import | CANNOT import |
-|---|---|---|---|
-| `internal/domain/` | Plain structs for the records flowing through the pipeline; pure validation/transformation functions | Standard library only | `internal/pipeline/`, `internal/sources/`, `internal/sinks/`, any external SDK |
-| `internal/pipeline/` | The stage interfaces (`Source`, `Transformer`, `Sink`), pipeline runner, backpressure logic | `internal/domain/`, standard library, `context` | Concrete source/sink implementations |
-| `internal/sources/` | Concrete sources (Kafka consumer, S3 lister, file reader, HTTP poller) | `internal/domain/`, `internal/pipeline/` (the Source interface), external SDKs | `internal/sinks/`, `cmd/` |
-| `internal/sinks/` | Concrete sinks (Postgres writer, S3 writer, Kafka producer, stdout) | `internal/domain/`, `internal/pipeline/` (the Sink interface), external SDKs | `internal/sources/`, `cmd/` |
-| `cmd/<name>/` | The main entry point — wires sources + transformers + sinks via the runner | All inner packages, all SDKs | (outermost — wires the world) |
+| Package              | What lives there                                                                                     | CAN import                                                                     | CANNOT import                                                                  |
+|----------------------|------------------------------------------------------------------------------------------------------|--------------------------------------------------------------------------------|--------------------------------------------------------------------------------|
+| `internal/domain/`   | Plain structs for the records flowing through the pipeline; pure validation/transformation functions | Standard library only                                                          | `internal/pipeline/`, `internal/sources/`, `internal/sinks/`, any external SDK |
+| `internal/pipeline/` | The stage interfaces (`Source`, `Transformer`, `Sink`), pipeline runner, backpressure logic          | `internal/domain/`, standard library, `context`                                | Concrete source/sink implementations                                           |
+| `internal/sources/`  | Concrete sources (Kafka consumer, S3 lister, file reader, HTTP poller)                               | `internal/domain/`, `internal/pipeline/` (the Source interface), external SDKs | `internal/sinks/`, `cmd/`                                                      |
+| `internal/sinks/`    | Concrete sinks (Postgres writer, S3 writer, Kafka producer, stdout)                                  | `internal/domain/`, `internal/pipeline/` (the Sink interface), external SDKs   | `internal/sources/`, `cmd/`                                                    |
+| `cmd/<name>/`        | The main entry point — wires sources + transformers + sinks via the runner                           | All inner packages, all SDKs                                                   | (outermost — wires the world)                                                  |
 
 ## Why
 

@@ -7,22 +7,22 @@
 
 Every error returned from a function in this codebase is **wrapped with context** using `fmt.Errorf("%w", err)`. The wrapping convention is `<package>: <operation>: %w`.
 
-| Pattern | Rule |
-|---|---|
-| Returning an error from a stdlib call | `return fmt.Errorf("read config file: %w", err)` |
-| Returning an error from a domain operation | `return fmt.Errorf("validate order %s: %w", id, err)` |
+| Pattern                                            | Rule                                                                                                                    |
+|----------------------------------------------------|-------------------------------------------------------------------------------------------------------------------------|
+| Returning an error from a stdlib call              | `return fmt.Errorf("read config file: %w", err)`                                                                        |
+| Returning an error from a domain operation         | `return fmt.Errorf("validate order %s: %w", id, err)`                                                                   |
 | Wrapping a typed error you want callers to inspect | Define a sentinel: `var ErrNotFound = errors.New("not found")` then `return fmt.Errorf("user %s: %w", id, ErrNotFound)` |
-| Checking a wrapped error | `if errors.Is(err, ErrNotFound)` — NEVER `if err.Error() == "..."` |
-| Adding context to a typed error to extract later | `errors.As(err, &target)` after `fmt.Errorf("%w", typedErr)` |
-| Returning the unwrapped error | NEVER — always wrap. Even a one-line passthrough gets `fmt.Errorf("step: %w", err)` |
+| Checking a wrapped error                           | `if errors.Is(err, ErrNotFound)` — NEVER `if err.Error() == "..."`                                                      |
+| Adding context to a typed error to extract later   | `errors.As(err, &target)` after `fmt.Errorf("%w", typedErr)`                                                            |
+| Returning the unwrapped error                      | NEVER — always wrap. Even a one-line passthrough gets `fmt.Errorf("step: %w", err)`                                     |
 
-| Anti-pattern | Why it's broken |
-|---|---|
-| `if err != nil { return err }` | Loses the operation context; stack trace is just leaf errors |
-| `return fmt.Errorf("error: %v", err)` (using `%v`, not `%w`) | Caller can't `errors.Is(...)` the wrapped error |
-| `errors.New("read failed")` for non-sentinel errors | Strips the underlying cause |
-| `panic(err)` outside of `main` or recoverable init | Pipelines should fail gracefully, not panic |
-| String matching on `err.Error()` | Brittle; breaks when the error message changes |
+| Anti-pattern                                                 | Why it's broken                                              |
+|--------------------------------------------------------------|--------------------------------------------------------------|
+| `if err != nil { return err }`                               | Loses the operation context; stack trace is just leaf errors |
+| `return fmt.Errorf("error: %v", err)` (using `%v`, not `%w`) | Caller can't `errors.Is(...)` the wrapped error              |
+| `errors.New("read failed")` for non-sentinel errors          | Strips the underlying cause                                  |
+| `panic(err)` outside of `main` or recoverable init           | Pipelines should fail gracefully, not panic                  |
+| String matching on `err.Error()`                             | Brittle; breaks when the error message changes               |
 
 ## Why
 

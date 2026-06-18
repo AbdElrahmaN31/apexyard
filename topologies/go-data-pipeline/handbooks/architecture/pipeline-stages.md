@@ -26,13 +26,13 @@ type Sink interface {
 }
 ```
 
-| Rule | Why |
-|---|---|
-| Sources hand off records via `Next` — pull model, not push | The runner controls backpressure by deciding when to call `Next` |
-| Transformers return a slice — even for 1-to-1, return `[]Record{result}` | Consistent shape; runner doesn't need to branch on transformer kind |
-| Sinks accept one record at a time; batch internally if needed | Keeps the runner simple; sinks own their own batching strategy |
-| Every stage accepts `context.Context` as the first param | Cancellation, deadlines, request-scoped values propagate |
-| Errors are wrapped with stage context | `fmt.Errorf("kafka source: read failed: %w", err)` — the stack trace shows where the failure occurred |
+| Rule                                                                     | Why                                                                                                   |
+|--------------------------------------------------------------------------|-------------------------------------------------------------------------------------------------------|
+| Sources hand off records via `Next` — pull model, not push               | The runner controls backpressure by deciding when to call `Next`                                      |
+| Transformers return a slice — even for 1-to-1, return `[]Record{result}` | Consistent shape; runner doesn't need to branch on transformer kind                                   |
+| Sinks accept one record at a time; batch internally if needed            | Keeps the runner simple; sinks own their own batching strategy                                        |
+| Every stage accepts `context.Context` as the first param                 | Cancellation, deadlines, request-scoped values propagate                                              |
+| Errors are wrapped with stage context                                    | `fmt.Errorf("kafka source: read failed: %w", err)` — the stack trace shows where the failure occurred |
 
 ## Why
 

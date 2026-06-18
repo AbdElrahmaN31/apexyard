@@ -7,22 +7,22 @@
 
 Every goroutine has a documented exit path. Goroutines that outlive their caller's context are a goroutine leak — they hold memory, file handles, network connections forever. Follow these rules:
 
-| Rule | Pattern |
-|---|---|
-| Every `go func() { ... }()` has an explicit exit condition | `select { case <-ctx.Done(): return }` in any loop |
-| `sync.WaitGroup` for "wait for these N to finish" | `wg.Add(1)` before `go`, `defer wg.Done()` in the goroutine, `wg.Wait()` to join |
-| `errgroup` for "wait + propagate the first error" | `g, gctx := errgroup.WithContext(ctx); g.Go(func() error { ... }); g.Wait()` |
-| Channels are closed by the SENDER, never the receiver | Receiver loops on `for v := range ch` — exits when sender closes |
+| Rule                                                         | Pattern                                                                               |
+|--------------------------------------------------------------|---------------------------------------------------------------------------------------|
+| Every `go func() { ... }()` has an explicit exit condition   | `select { case <-ctx.Done(): return }` in any loop                                    |
+| `sync.WaitGroup` for "wait for these N to finish"            | `wg.Add(1)` before `go`, `defer wg.Done()` in the goroutine, `wg.Wait()` to join      |
+| `errgroup` for "wait + propagate the first error"            | `g, gctx := errgroup.WithContext(ctx); g.Go(func() error { ... }); g.Wait()`          |
+| Channels are closed by the SENDER, never the receiver        | Receiver loops on `for v := range ch` — exits when sender closes                      |
 | Goroutines that send to a channel check for closed receivers | `select { case ch <- v: case <-ctx.Done(): return }` — avoids panic on send to closed |
-| Worker pools have an explicit cap | `for i := 0; i < N; i++ { go worker(...) }` — never unbounded `go` per iteration |
+| Worker pools have an explicit cap                            | `for i := 0; i < N; i++ { go worker(...) }` — never unbounded `go` per iteration      |
 
-| Anti-pattern | Why it's broken |
-|---|---|
-| `go someFunc()` with no cancellation signal | Goroutine leak if `someFunc` runs forever |
-| Unbounded `go` per loop iteration | Can spawn millions of goroutines; OOM |
-| Receiver closing the channel | Panics if sender writes after close; data loss |
-| `defer wg.Done()` BEFORE `wg.Add(1)` | Race: Done fires before Wait sees the Add |
-| Recovering from a panic and continuing | Goroutine is in an undefined state; restart, don't recover-and-continue |
+| Anti-pattern                                | Why it's broken                                                         |
+|---------------------------------------------|-------------------------------------------------------------------------|
+| `go someFunc()` with no cancellation signal | Goroutine leak if `someFunc` runs forever                               |
+| Unbounded `go` per loop iteration           | Can spawn millions of goroutines; OOM                                   |
+| Receiver closing the channel                | Panics if sender writes after close; data loss                          |
+| `defer wg.Done()` BEFORE `wg.Add(1)`        | Race: Done fires before Wait sees the Add                               |
+| Recovering from a panic and continuing      | Goroutine is in an undefined state; restart, don't recover-and-continue |
 
 ## Why
 

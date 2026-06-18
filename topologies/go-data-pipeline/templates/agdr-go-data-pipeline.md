@@ -12,51 +12,51 @@
 
 ### A) Queue / source technology
 
-| Option | Pros | Cons | Picked? |
-|--------|------|------|---------|
-| **Kafka** | High throughput; deterministic replay; partition-level ordering; broad ecosystem | Operational complexity; consumer-group rebalances; offset-management subtlety | |
-| **AWS SQS** | Managed; trivial setup; per-message visibility timeout = built-in retry | No replay; FIFO queues are limited; per-message cost at scale | |
-| **NATS / NATS JetStream** | Light operationally; subjects + streams; good Go SDK | Smaller ecosystem; less broad adoption | |
-| **AWS Kinesis** | Managed Kafka-alike; replay window | Throughput limits per shard; consumer-library quirks | |
-| **Redpanda** | Kafka API + simpler ops | Newer; smaller community | |
-| **PostgreSQL LISTEN/NOTIFY** | Already-deployed Postgres; no extra infra | Not durable; ephemeral; max payload size limits | |
+| Option                       | Pros                                                                             | Cons                                                                          | Picked? |
+|------------------------------|----------------------------------------------------------------------------------|-------------------------------------------------------------------------------|---------|
+| **Kafka**                    | High throughput; deterministic replay; partition-level ordering; broad ecosystem | Operational complexity; consumer-group rebalances; offset-management subtlety |         |
+| **AWS SQS**                  | Managed; trivial setup; per-message visibility timeout = built-in retry          | No replay; FIFO queues are limited; per-message cost at scale                 |         |
+| **NATS / NATS JetStream**    | Light operationally; subjects + streams; good Go SDK                             | Smaller ecosystem; less broad adoption                                        |         |
+| **AWS Kinesis**              | Managed Kafka-alike; replay window                                               | Throughput limits per shard; consumer-library quirks                          |         |
+| **Redpanda**                 | Kafka API + simpler ops                                                          | Newer; smaller community                                                      |         |
+| **PostgreSQL LISTEN/NOTIFY** | Already-deployed Postgres; no extra infra                                        | Not durable; ephemeral; max payload size limits                               |         |
 
 ### B) Checkpoint storage
 
-| Option | Pros | Cons | Picked? |
-|--------|------|------|---------|
-| **In-source (Kafka offsets via consumer group)** | Co-located with the source; one less thing to operate | Coupled to Kafka; consumer-group semantics get fiddly | |
-| **Postgres (separate `checkpoints` table)** | Already-deployed; strong consistency | Adds a DB write per checkpoint; latency | |
-| **DynamoDB** | Managed; fast key-value writes | Vendor lock-in; eventual-consistency footguns | |
-| **Local SQLite** | Trivial; embedded | Doesn't survive container restarts; single-instance only | |
+| Option                                           | Pros                                                  | Cons                                                     | Picked? |
+|--------------------------------------------------|-------------------------------------------------------|----------------------------------------------------------|---------|
+| **In-source (Kafka offsets via consumer group)** | Co-located with the source; one less thing to operate | Coupled to Kafka; consumer-group semantics get fiddly    |         |
+| **Postgres (separate `checkpoints` table)**      | Already-deployed; strong consistency                  | Adds a DB write per checkpoint; latency                  |         |
+| **DynamoDB**                                     | Managed; fast key-value writes                        | Vendor lock-in; eventual-consistency footguns            |         |
+| **Local SQLite**                                 | Trivial; embedded                                     | Doesn't survive container restarts; single-instance only |         |
 
 ### C) Sink — destination
 
-| Option | Pros | Cons | Picked? |
-|--------|------|------|---------|
-| **Postgres bulk INSERT with `COPY`** | Fast; strong consistency; ACID | Schema rigidity; vertical-scale ceiling | |
-| **S3 (Parquet / JSON-lines)** | Cheap storage; analytics-friendly; horizontal scale | Eventually consistent on list; latency for downstream | |
-| **ClickHouse / Snowflake / BigQuery** | Built for analytical workloads | Latency tier; cost | |
-| **Kafka (next stage in a multi-stage pipeline)** | Backpressure built in; downstream decoupling | Doubles the queue infra |  |
-| **HTTP endpoint (downstream service)** | Simple; no infra | No batching; throughput cap at HTTP RPS | |
+| Option                                           | Pros                                                | Cons                                                  | Picked? |
+|--------------------------------------------------|-----------------------------------------------------|-------------------------------------------------------|---------|
+| **Postgres bulk INSERT with `COPY`**             | Fast; strong consistency; ACID                      | Schema rigidity; vertical-scale ceiling               |         |
+| **S3 (Parquet / JSON-lines)**                    | Cheap storage; analytics-friendly; horizontal scale | Eventually consistent on list; latency for downstream |         |
+| **ClickHouse / Snowflake / BigQuery**            | Built for analytical workloads                      | Latency tier; cost                                    |         |
+| **Kafka (next stage in a multi-stage pipeline)** | Backpressure built in; downstream decoupling        | Doubles the queue infra                               |         |
+| **HTTP endpoint (downstream service)**           | Simple; no infra                                    | No batching; throughput cap at HTTP RPS               |         |
 
 ### D) Concurrency model
 
-| Option | Pros | Cons | Picked? |
-|--------|------|------|---------|
-| **Single goroutine per pipeline** | Simplest; ordering preserved | Throughput capped at single-thread speed | |
-| **Bounded worker pool via `errgroup.SetLimit`** | Concurrent processing; explicit cap | Out-of-order processing; sink must be idempotent (see at-least-once handbook) | |
-| **Per-partition worker (Kafka)** | Per-partition ordering + parallelism | Hot-partition imbalance | |
-| **Channel pipeline (fan-out, fan-in)** | Composable | Channel-management complexity; deadlock-prone | |
+| Option                                          | Pros                                 | Cons                                                                          | Picked? |
+|-------------------------------------------------|--------------------------------------|-------------------------------------------------------------------------------|---------|
+| **Single goroutine per pipeline**               | Simplest; ordering preserved         | Throughput capped at single-thread speed                                      |         |
+| **Bounded worker pool via `errgroup.SetLimit`** | Concurrent processing; explicit cap  | Out-of-order processing; sink must be idempotent (see at-least-once handbook) |         |
+| **Per-partition worker (Kafka)**                | Per-partition ordering + parallelism | Hot-partition imbalance                                                       |         |
+| **Channel pipeline (fan-out, fan-in)**          | Composable                           | Channel-management complexity; deadlock-prone                                 |         |
 
 ### E) Deployment
 
-| Option | Pros | Cons | Picked? |
-|--------|------|------|---------|
-| **Kubernetes Deployment** | Standard ops; rolling restart; HPA | Operational overhead | |
-| **Single binary on a VM (systemd)** | Simplest for low-volume | No HA; manual scaling | |
-| **Lambda (with EventBridge / SQS trigger)** | Pay-per-record; no instance management | Cold starts; 15-min execution cap | |
-| **ECS / Cloud Run** | Container + auto-scale | Less flexibility than k8s |  |
+| Option                                      | Pros                                   | Cons                              | Picked? |
+|---------------------------------------------|----------------------------------------|-----------------------------------|---------|
+| **Kubernetes Deployment**                   | Standard ops; rolling restart; HPA     | Operational overhead              |         |
+| **Single binary on a VM (systemd)**         | Simplest for low-volume                | No HA; manual scaling             |         |
+| **Lambda (with EventBridge / SQS trigger)** | Pay-per-record; no instance management | Cold starts; 15-min execution cap |         |
+| **ECS / Cloud Run**                         | Container + auto-scale                 | Less flexibility than k8s         |         |
 
 ## Decision
 
