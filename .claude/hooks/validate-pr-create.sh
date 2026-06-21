@@ -132,30 +132,12 @@ if [ -n "$TICKET_REF" ]; then
   # Extract digits from the ref (works for both #N and PREFIX-N)
   TICKET_NUM=$(echo "$TICKET_REF" | grep -oE '[0-9]+$')
 
-  # Load the tracker library (kind / view command / id pattern).
-  # Source from HOOK_DIR so we don't depend on cwd-relative resolution
-  # (inside workspace/<project>/ the lib still lives at the ops fork). The
-  # lib itself reads config via _lib-read-config.sh which now resolves
-  # from the ops fork too (me2resh/apexyard#310).
-  TRACKER_KIND="gh"
-  if [ -f "$HOOK_DIR/_lib-tracker.sh" ]; then
-    # shellcheck disable=SC1090,SC1091
-    . "$HOOK_DIR/_lib-tracker.sh"
-    TRACKER_KIND=$(tracker_kind)
-  fi
-
-  # Short-circuit: existence verification disabled.
-  if [ "$TRACKER_KIND" = "none" ]; then
-    # Shape-only validation already happened above (PR title regex). Nothing
-    # more to do for this branch.
-    TICKET_NUM=""
-  fi
-
-  # Resolve tracker repo: prefer --repo flag, then ops-fork-rooted
-  # project-config.json (.tracker_repo), then origin remote of the
-  # current cwd's git checkout. The ops-fork-rooted read matters when the
-  # operator is inside workspace/<project>/ — the project clone's git root
-  # is NOT where the framework config lives.
+  # Resolve tracker repo FIRST (before the kind lookup): prefer --repo flag,
+  # then ops-fork-rooted project-config.json (.tracker_repo), then origin
+  # remote of the current cwd's git checkout. The ops-fork-rooted read matters
+  # when the operator is inside workspace/<project>/ — the project clone's git
+  # root is NOT where the framework config lives. Resolved up front so the kind
+  # lookup below can key off the target repo for a per-project override (#670).
   TRACKER_REPO=""
   if [ -n "$CMD_REPO" ]; then
     TRACKER_REPO="$CMD_REPO"
@@ -166,6 +148,26 @@ if [ -n "$TICKET_REF" ]; then
     # Parse owner/repo from origin remote
     ORIGIN_URL=$(git remote get-url origin 2>/dev/null)
     TRACKER_REPO=$(echo "$ORIGIN_URL" | sed -nE 's|.*[:/]([^/:]+/[^/]+)\.git$|\1|p; s|.*[:/]([^/:]+/[^/]+)$|\1|p' | head -1)
+  fi
+
+  # Load the tracker library (kind / view command / id pattern).
+  # Source from HOOK_DIR so we don't depend on cwd-relative resolution
+  # (inside workspace/<project>/ the lib still lives at the ops fork). The
+  # lib itself reads config via _lib-read-config.sh which now resolves
+  # from the ops fork too (me2resh/apexyard#310). The kind is resolved for
+  # TRACKER_REPO so a per-project override wins over the global block (#670).
+  TRACKER_KIND="gh"
+  if [ -f "$HOOK_DIR/_lib-tracker.sh" ]; then
+    # shellcheck disable=SC1090,SC1091
+    . "$HOOK_DIR/_lib-tracker.sh"
+    TRACKER_KIND=$(tracker_kind "$TRACKER_REPO")
+  fi
+
+  # Short-circuit: existence verification disabled.
+  if [ "$TRACKER_KIND" = "none" ]; then
+    # Shape-only validation already happened above (PR title regex). Nothing
+    # more to do for this branch.
+    TICKET_NUM=""
   fi
 
   # Optional upstream fallback (me2resh/apexyard#207). When the primary

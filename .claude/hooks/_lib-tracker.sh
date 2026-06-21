@@ -11,12 +11,19 @@
 #   tracker.id_pattern   — regex for valid ticket-ID shape (no-existence-check fallback)
 #
 # Public functions:
-#   tracker_kind                       echoes the configured tracker kind
-#   tracker_id_pattern                 echoes the configured ID regex
+#   tracker_kind [<owner/repo>]        echoes the configured tracker kind
+#   tracker_id_pattern [<owner/repo>]  echoes the configured ID regex
 #   tracker_owner_repo_param <slug>    formats the owner/repo parameter (gh: "owner/repo"; others: empty)
 #   tracker_view <id> [<owner_repo>]   dispatches the view command and emits normalised JSON on stdout
 #                                      Exit 0 = ticket exists; non-zero = doesn't, or CLI errored.
 #                                      JSON shape: {"state":..., "title":..., "url":..., "labels":[...]}
+#
+# Per-project resolution (#670 / AgDR-0072): tracker_kind / tracker_id_pattern /
+# tracker_view take an OPTIONAL owner/repo. When supplied, a `tracker:` block on
+# that project's apexyard.projects.yaml entry overrides the global config block
+# (per key); when omitted, the global block is used — byte-for-byte the original
+# behaviour. The project is chosen by the OPERATION'S TARGET REPO the caller
+# already holds — never by cwd or a session-global marker.
 #
 # Normalisation: each adapter parses the underlying CLI's JSON (gh / linear /
 # jira / asana / custom) into the common shape above. Consumers should only
@@ -52,12 +59,100 @@ _tracker_load_config_lib() {
 }
 
 # ------------------------------------------------------------------------------
-# Public: tracker_kind
-#   Echoes the configured tracker kind. Default "gh" (GitHub Issues).
+# Internal: ensure _lib-portfolio-paths.sh is loaded so portfolio_registry works.
+# ------------------------------------------------------------------------------
+_tracker_load_portfolio_lib() {
+  if command -v portfolio_registry >/dev/null 2>&1; then
+    return 0
+  fi
+  local hook_dir
+  hook_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  if [ -f "$hook_dir/_lib-portfolio-paths.sh" ]; then
+    # shellcheck source=/dev/null
+    . "$hook_dir/_lib-portfolio-paths.sh"
+  fi
+}
+
+# ------------------------------------------------------------------------------
+# Internal: _tracker_project_value <owner/repo> <key>
+#   Reads `.projects[] | select(.repo == <owner/repo>) | .tracker.<key>` from the
+#   portfolio registry (apexyard.projects.yaml) — the per-project override for
+#   one tracker key (kind / id_pattern / view_command / create_command).
+#
+#   The project is selected by the OPERATION'S TARGET REPO passed in by the
+#   caller — never by cwd or a session-global marker (see AgDR-0072 / #670).
+#
+#   Echoes the value and exits 0 when a non-empty override exists; exits 1
+#   (empty stdout) otherwise — so callers fall back to the global config block.
+#
+#   YAML is read via `yq` (mikefarah, matching _lib-portfolio-paths.sh) with a
+#   `python3`+PyYAML fallback. If neither can parse, the lookup returns 1 and the
+#   caller degrades to the global tracker config — single-tracker forks unaffected.
+# ------------------------------------------------------------------------------
+_tracker_project_value() {
+  local repo="$1" key="$2"
+  [ -n "$repo" ] && [ -n "$key" ] || return 1
+  _tracker_load_portfolio_lib
+  command -v portfolio_registry >/dev/null 2>&1 || return 1
+  local registry
+  registry=$(portfolio_registry 2>/dev/null)
+  [ -n "$registry" ] && [ -f "$registry" ] || return 1
+
+  local val=""
+  if command -v yq >/dev/null 2>&1; then
+    # Pass the repo via env + strenv() so an odd repo value can never break out
+    # of the yq expression (defense-in-depth — a real owner/repo can't contain a
+    # quote, but the python3 path below is argv-safe, so match it here). $key is
+    # always a hardcoded literal from callers (kind / id_pattern / view_command),
+    # so substituting it into the path is safe.
+    val=$(REPO="$repo" yq eval ".projects[] | select(.repo == strenv(REPO)) | .tracker.$key // \"\"" "$registry" 2>/dev/null | head -1)
+  fi
+  if { [ -z "$val" ] || [ "$val" = "null" ]; } && command -v python3 >/dev/null 2>&1; then
+    val=$(python3 - "$registry" "$repo" "$key" <<'PY' 2>/dev/null
+import sys
+try:
+    import yaml
+except Exception:
+    sys.exit(0)
+reg, repo, key = sys.argv[1], sys.argv[2], sys.argv[3]
+try:
+    doc = yaml.safe_load(open(reg)) or {}
+except Exception:
+    sys.exit(0)
+for p in (doc.get("projects") or []):
+    if p.get("repo") == repo:
+        v = (p.get("tracker") or {}).get(key)
+        if v is not None:
+            print(v)
+        break
+PY
+)
+  fi
+
+  if [ -z "$val" ] || [ "$val" = "null" ]; then
+    return 1
+  fi
+  echo "$val"
+}
+
+# ------------------------------------------------------------------------------
+# Public: tracker_kind [<owner/repo>]
+#   Echoes the configured tracker kind. With an optional <owner/repo>, a
+#   per-project `tracker.kind` override in the registry wins; otherwise the
+#   global config block (default "gh"). The no-arg path is byte-for-byte the
+#   original behaviour (cached).
 # ------------------------------------------------------------------------------
 _TRACKER_KIND_CACHE=""
 tracker_kind() {
-  if [ -n "$_TRACKER_KIND_CACHE" ]; then
+  local repo="${1:-}"
+  if [ -n "$repo" ]; then
+    local pv
+    if pv=$(_tracker_project_value "$repo" kind) && [ -n "$pv" ]; then
+      echo "$pv"
+      return 0
+    fi
+  fi
+  if [ -z "$repo" ] && [ -n "$_TRACKER_KIND_CACHE" ]; then
     echo "$_TRACKER_KIND_CACHE"
     return 0
   fi
@@ -67,7 +162,9 @@ tracker_kind() {
   if [ -z "$k" ] || [ "$k" = "null" ]; then
     k="gh"
   fi
-  _TRACKER_KIND_CACHE="$k"
+  if [ -z "$repo" ]; then
+    _TRACKER_KIND_CACHE="$k"
+  fi
   echo "$k"
 }
 
@@ -81,7 +178,15 @@ tracker_kind() {
 # ------------------------------------------------------------------------------
 _TRACKER_ID_PATTERN_CACHE=""
 tracker_id_pattern() {
-  if [ -n "$_TRACKER_ID_PATTERN_CACHE" ]; then
+  local repo="${1:-}"
+  if [ -n "$repo" ]; then
+    local pv
+    if pv=$(_tracker_project_value "$repo" id_pattern) && [ -n "$pv" ]; then
+      echo "$pv"
+      return 0
+    fi
+  fi
+  if [ -z "$repo" ] && [ -n "$_TRACKER_ID_PATTERN_CACHE" ]; then
     echo "$_TRACKER_ID_PATTERN_CACHE"
     return 0
   fi
@@ -91,7 +196,9 @@ tracker_id_pattern() {
   if [ -z "$p" ] || [ "$p" = "null" ]; then
     p='^(#[0-9]+|GH-[0-9]+|[A-Z]{2,10}-[0-9]+)$'
   fi
-  _TRACKER_ID_PATTERN_CACHE="$p"
+  if [ -z "$repo" ]; then
+    _TRACKER_ID_PATTERN_CACHE="$p"
+  fi
   echo "$p"
 }
 
@@ -101,7 +208,15 @@ tracker_id_pattern() {
 # ------------------------------------------------------------------------------
 _TRACKER_VIEW_TPL_CACHE=""
 _tracker_view_template() {
-  if [ -n "$_TRACKER_VIEW_TPL_CACHE" ]; then
+  local repo="${1:-}"
+  if [ -n "$repo" ]; then
+    local pv
+    if pv=$(_tracker_project_value "$repo" view_command) && [ -n "$pv" ]; then
+      echo "$pv"
+      return 0
+    fi
+  fi
+  if [ -z "$repo" ] && [ -n "$_TRACKER_VIEW_TPL_CACHE" ]; then
     echo "$_TRACKER_VIEW_TPL_CACHE"
     return 0
   fi
@@ -111,7 +226,9 @@ _tracker_view_template() {
   if [ -z "$tpl" ] || [ "$tpl" = "null" ]; then
     tpl='gh issue view {id} --repo {owner_repo} --json state,title,url,labels'
   fi
-  _TRACKER_VIEW_TPL_CACHE="$tpl"
+  if [ -z "$repo" ]; then
+    _TRACKER_VIEW_TPL_CACHE="$tpl"
+  fi
   echo "$tpl"
 }
 
@@ -262,8 +379,11 @@ tracker_view() {
     return 1
   fi
 
+  # Per-project resolution: when an owner_repo is supplied, the tracker kind
+  # and view_command come from that project's registry override (if any),
+  # falling back to the global config block. See AgDR-0072 / #670.
   local kind
-  kind=$(tracker_kind)
+  kind=$(tracker_kind "$owner_repo")
 
   case "$kind" in
     none)
@@ -279,7 +399,7 @@ tracker_view() {
   fi
 
   local tpl cmd raw rc
-  tpl=$(_tracker_view_template)
+  tpl=$(_tracker_view_template "$owner_repo")
   cmd=$(_tracker_substitute "$tpl" "$id" "$owner_repo")
 
   # Run the command; capture stdout. Suppress stderr (CLI errors are visible
