@@ -148,32 +148,76 @@ if [ -z "$REPO_ROOT" ]; then
 fi
 
 # ---------------------------------------------------------------------------
+# 2a-0. Source the PR-repo lib up front. We need two things from it:
+#   - pr_cmd_cd_target  → re-root the diff to the cd-target (#669)
+#   - pr_repo_matches_cwd → the cross-repo guard (#464)
+# ---------------------------------------------------------------------------
+
+HOOK_DIR_AGDR="$(cd "$(dirname "$0")" && pwd)"
+PR_REPO_LIB_OK=0
+if [ -f "$HOOK_DIR_AGDR/_lib-pr-repo.sh" ]; then
+  # shellcheck source=/dev/null
+  . "$HOOK_DIR_AGDR/_lib-pr-repo.sh"
+  PR_REPO_LIB_OK=1
+fi
+
+# ---------------------------------------------------------------------------
+# 2a-i-a. Re-root the diff to the command's `cd` target (me2resh/apexyard#669).
+#
+# The harness fires this PreToolUse hook BEFORE the shell runs the command, so
+# a `cd <repo> && gh pr create …` prefix has NOT yet changed the working dir —
+# the hook's cwd is still the ops fork. Without re-rooting, the diff below
+# reflects the FORK's working tree (which may carry recent arch-path commits),
+# producing a phantom "architecture changes" block on a PR that is actually
+# being created in a DIFFERENT repo (a split-portfolio private repo, or a
+# `workspace/<project>/` clone in single-fork mode) and touches none of them.
+#
+# Fix: if the command begins with `cd <path> &&`, evaluate all working-tree
+# git operations against <path>'s repo. Config + session markers stay anchored
+# to REPO_ROOT (the ops fork) — only the *diff* tree moves.
+# ---------------------------------------------------------------------------
+
+DIFF_DIR="$REPO_ROOT"
+if [ "$PR_REPO_LIB_OK" = 1 ]; then
+  CD_TARGET=$(pr_cmd_cd_target "$COMMAND")
+  if [ -n "$CD_TARGET" ]; then
+    CD_TOPLEVEL=$(git -C "$CD_TARGET" rev-parse --show-toplevel 2>/dev/null)
+    if [ -n "$CD_TOPLEVEL" ]; then
+      DIFF_DIR="$CD_TOPLEVEL"
+    fi
+    # If <path> is not a readable git tree, fall through with DIFF_DIR=REPO_ROOT
+    # — no worse than the pre-#669 behaviour.
+  fi
+fi
+
+# All working-tree git operations below run against DIFF_DIR (the repo the PR
+# is actually being created in). Markers + config remain anchored to REPO_ROOT.
+gitd() { git -C "$DIFF_DIR" "$@"; }
+
+# ---------------------------------------------------------------------------
 # 2a-i. Cross-repo guard (me2resh/apexyard#464).
 #
-# When the hook fires on a `gh pr create --repo <X>` command but the current
-# git working tree belongs to a DIFFERENT repo (e.g. the session is pinned to
-# the ops-fork while the command targets a sibling repo), the diff computed
-# below reflects the ops-fork's changed files — NOT the PR's actual diff.
-# That produces false-positive blocks for PRs that don't touch any framework
+# When the hook fires on a `gh pr create --repo <X>` command but the diff tree
+# belongs to a DIFFERENT repo (e.g. the session is pinned to the ops-fork while
+# the command targets a sibling repo with no local checkout), the diff computed
+# below reflects the wrong working tree — NOT the PR's actual diff. That
+# produces false-positive blocks for PRs that don't touch any framework
 # architecture paths.
 #
 # Fix: compare the PR target repo (--repo flag, or implicit same-repo) to the
-# origin remote of the current working tree. If they differ, we cannot compute
-# a meaningful diff for this PR from this cwd → exit 0 (no-op).
+# origin remote of the diff tree. If they differ, we cannot compute a
+# meaningful diff for this PR from here → exit 0 (no-op).
 #
 # Framework gating is preserved: when creating a me2resh/apexyard PR from the
 # framework cwd, the --repo value matches origin → the guard does NOT fire and
 # the diff check runs as usual.
 # ---------------------------------------------------------------------------
 
-HOOK_DIR_AGDR="$(cd "$(dirname "$0")" && pwd)"
-if [ -f "$HOOK_DIR_AGDR/_lib-pr-repo.sh" ]; then
-  # shellcheck source=/dev/null
-  . "$HOOK_DIR_AGDR/_lib-pr-repo.sh"
-  if ! pr_repo_matches_cwd "$COMMAND" "$REPO_ROOT"; then
-    # PR targets a different repo than this working tree — cannot evaluate
-    # the arch-path diff from here. Silently pass; the hook in that repo's
-    # own CI context will gate this correctly.
+if [ "$PR_REPO_LIB_OK" = 1 ]; then
+  if ! pr_repo_matches_cwd "$COMMAND" "$DIFF_DIR"; then
+    # PR targets a different repo than the diff tree — cannot evaluate the
+    # arch-path diff from here. Silently pass; the hook in that repo's own CI
+    # context will gate this correctly.
     exit 0
   fi
 else
@@ -254,7 +298,7 @@ spike_pr_exempt() {
 
   # (c) branch named spike/... or prototype/...
   local branch
-  branch=$(git -C "$REPO_ROOT" branch --show-current 2>/dev/null)
+  branch=$(gitd branch --show-current 2>/dev/null)
   if echo "$branch" | grep -qE '^(spike|prototype)/'; then
     return 0
   fi
@@ -283,7 +327,7 @@ BASE_REF=""
 resolve_ref() {
   # Verify a ref exists; echo it if so, else empty.
   local ref="$1"
-  if git rev-parse --verify --quiet "$ref" >/dev/null 2>&1; then
+  if gitd rev-parse --verify --quiet "$ref" >/dev/null 2>&1; then
     echo "$ref"
   fi
 }
@@ -308,12 +352,12 @@ if [ -z "$BASE_REF" ]; then
   exit 0
 fi
 
-MERGE_BASE=$(git merge-base HEAD "$BASE_REF" 2>/dev/null)
+MERGE_BASE=$(gitd merge-base HEAD "$BASE_REF" 2>/dev/null)
 if [ -z "$MERGE_BASE" ]; then
   exit 0
 fi
 
-CHANGED_FILES=$(git diff --name-only "$MERGE_BASE"..HEAD 2>/dev/null)
+CHANGED_FILES=$(gitd diff --name-only "$MERGE_BASE"..HEAD 2>/dev/null)
 if [ -z "$CHANGED_FILES" ]; then
   # No files changed — nothing to evaluate.
   exit 0
@@ -443,8 +487,8 @@ while IFS= read -r depfile; do
     [ -z "$file" ] && continue
     case "$depfile" in
       package.json)
-        BASE_JSON=$(git show "$MERGE_BASE:$file" 2>/dev/null)
-        HEAD_JSON=$(git show "HEAD:$file" 2>/dev/null)
+        BASE_JSON=$(gitd show "$MERGE_BASE:$file" 2>/dev/null)
+        HEAD_JSON=$(gitd show "HEAD:$file" 2>/dev/null)
         # File may be newly added → BASE_JSON empty → any deps are additions.
         if [ -z "$BASE_JSON" ]; then
           if [ -n "$HEAD_JSON" ] && command -v jq >/dev/null 2>&1; then
@@ -478,7 +522,7 @@ while IFS= read -r depfile; do
         ;;
       *)
         # Non-JSON heuristic. Pull the unified diff for this file.
-        DIFF=$(git diff "$MERGE_BASE"..HEAD -- "$file" 2>/dev/null)
+        DIFF=$(gitd diff "$MERGE_BASE"..HEAD -- "$file" 2>/dev/null)
         [ -z "$DIFF" ] && continue
         ADDED_LINES=$(echo "$DIFF" | grep -cE '^\+[^+]' || true)
         REMOVED_LINES=$(echo "$DIFF" | grep -cE '^-[^-]' || true)

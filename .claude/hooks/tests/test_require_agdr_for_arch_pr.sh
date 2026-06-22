@@ -351,6 +351,89 @@ run_case "embedded quote, no AgDR ref at all → still BLOCKS (true-negative) [#
   "gh pr create --base main --title 'feat(#3): tweak domain' --body 'Uses \"greedy\" matching but forgot to add the decision record.'"
 
 # ---------------------------------------------------------------------------
+# Two-repo `cd <target> && gh pr create` (no --repo) — me2resh/apexyard#669.
+#
+# The hook fires from the cwd tree (the ops fork, which carries arch changes
+# on HEAD) BEFORE the in-command `cd` executes. Without re-rooting the diff to
+# the cd-target, the hook diffs the cwd tree and false-blocks a docs-only PR
+# that is actually being created in a *different* repo (the split-portfolio
+# private repo, or a `workspace/<project>/` clone in single-fork mode).
+#
+# The fix: when the command begins with `cd <path> && …`, evaluate the PR diff
+# against <path>'s git tree, not the cwd's.
+# ---------------------------------------------------------------------------
+
+# Build a sibling target repo with a docs-only feature branch (no arch paths).
+make_target_repo_docs() {
+  local pdir
+  pdir=$(mktemp -d -t agdr-tgt.XXXXXX)
+  (
+    cd "$pdir" || exit 1
+    git init -q -b main
+    git config user.email t@t.test
+    git config user.name test
+    git remote add origin git@github.com:test-org/portfolio.git
+    mkdir -p docs
+    echo "# registry" > docs/readme.md
+    git add docs/readme.md
+    git commit -q -m "base: docs"
+    git checkout -q -b feature
+    echo "# registry update" >> docs/readme.md
+    git add docs/readme.md
+    git commit -q -m "docs: update registry"
+  )
+  echo "$pdir"
+}
+
+# Build a sibling target repo whose feature branch DOES touch an arch path.
+make_target_repo_arch() {
+  local pdir
+  pdir=$(mktemp -d -t agdr-tgt.XXXXXX)
+  (
+    cd "$pdir" || exit 1
+    git init -q -b main
+    git config user.email t@t.test
+    git config user.name test
+    git remote add origin git@github.com:test-org/portfolio.git
+    mkdir -p src/domain
+    echo "export const x = 1" > src/domain/widget.ts
+    git add src/domain/widget.ts
+    git commit -q -m "base: domain"
+    git checkout -q -b feature
+    echo "export const x = 2" > src/domain/widget.ts
+    git add src/domain/widget.ts
+    git commit -q -m "feat: tweak domain"
+  )
+  echo "$pdir"
+}
+
+# (D) cwd tree has arch changes; cd-target is docs-only → PASS (no false-block).
+#     Pre-fix this BLOCKS because the hook diffs the cwd (fork) tree. [#669]
+FORK_DIR=$(setup_repo c1_base c1_feat)
+TGT_DOCS=$(make_target_repo_docs)
+run_case "cd-target docs-only PR (cwd has arch changes), no --repo → PASS [#669]" \
+  "$FORK_DIR" 0 "" \
+  "cd $TGT_DOCS && gh pr create --base main --title 'chore(#5): update registry docs' --body 'Docs only. No decisions made.'"
+rm -rf "$TGT_DOCS"
+
+# (E) cd-target itself touches an arch path, no AgDR → still BLOCKS.
+#     Proves the re-root targets the right tree rather than just skipping. [#669]
+FORK_DIR2=$(setup_repo c6_base c6_feat)
+TGT_ARCH=$(make_target_repo_arch)
+run_case "cd-target arch PR, no AgDR → still BLOCKS (true-negative) [#669]" \
+  "$FORK_DIR2" 2 "no AgDR reference" \
+  "cd $TGT_ARCH && gh pr create --base main --title 'feat(#6): portfolio domain' --body 'Forgot the decision record.'"
+rm -rf "$TGT_ARCH"
+
+# (F) cd-target arch PR WITH an AgDR reference → PASS. [#669]
+FORK_DIR3=$(setup_repo c1_base c1_feat)
+TGT_ARCH2=$(make_target_repo_arch)
+run_case "cd-target arch PR with AgDR ref → PASS [#669]" \
+  "$FORK_DIR3" 0 "" \
+  "cd $TGT_ARCH2 && gh pr create --base main --title 'feat(#7): portfolio domain' --body 'See AgDR-0009-portfolio-domain for rationale.'"
+rm -rf "$TGT_ARCH2"
+
+# ---------------------------------------------------------------------------
 # Result
 # ---------------------------------------------------------------------------
 
