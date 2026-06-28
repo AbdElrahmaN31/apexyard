@@ -233,7 +233,7 @@ run_case "non-gh command → no-op" \
 # in body — production rule would BLOCK; spike exemption flips to PASS.
 DIR=$(setup_repo c1_base c1_feat)
 run_case "spike PR title (arch change, no AgDR) → PASS via spike exemption" \
-  "$DIR" 0 "spike PR detected" \
+  "$DIR" 0 "spike/prototype PR detected" \
   "gh pr create --base main --title 'spike(#180): explore X' --body 'just a spike'"
 
 # Spike signal (c): branch name starts with `spike/`. Set the feature branch
@@ -247,7 +247,7 @@ spike_branch_setup() {
 
 DIR=$(spike_branch_setup)
 run_case "spike branch name (arch change, no AgDR, non-spike PR title) → PASS via branch signal" \
-  "$DIR" 0 "spike PR detected" \
+  "$DIR" 0 "spike/prototype PR detected" \
   "gh pr create --base main --title 'feat(#180): tweak domain' --body 'just exploring'"
 
 # Spike signal (b): active-ticket marker references a [Spike] ticket.
@@ -278,8 +278,42 @@ EOF
 
 DIR=$(spike_marker_setup)
 run_case "spike active-ticket marker (arch change, non-spike branch + title) → PASS via marker signal" \
-  "$DIR" 0 "spike PR detected" \
+  "$DIR" 0 "spike/prototype PR detected" \
   "gh pr create --base main --title 'feat(#180): tweak domain' --body 'no AgDR'"
+
+# ---------------------------------------------------------------------------
+# Prototype exemption (apexyard#673) — same three signals as spike; any one
+# wins. Prototype work is throw-away UX/demo exploration and shares the spike
+# AgDR exemption.
+# ---------------------------------------------------------------------------
+
+# Prototype signal (a): PR title type = `prototype(...)`.
+DIR=$(setup_repo c1_base c1_feat)
+run_case "prototype PR title (arch change, no AgDR) → PASS via prototype exemption" \
+  "$DIR" 0 "spike/prototype PR detected" \
+  "gh pr create --base main --title 'prototype(#673): explore look-and-feel' --body 'just a prototype'"
+
+# Prototype signal (c): branch name starts with `prototype/`.
+prototype_branch_setup() {
+  local dir
+  dir=$(setup_repo c1_base c1_feat)
+  ( cd "$dir" && git branch -m prototype/GH-673-explore ) >/dev/null 2>&1
+  echo "$dir"
+}
+
+DIR=$(prototype_branch_setup)
+run_case "prototype branch name (arch change, no AgDR, non-prototype PR title) → PASS via branch signal" \
+  "$DIR" 0 "spike/prototype PR detected" \
+  "gh pr create --base main --title 'feat(#673): tweak domain' --body 'just exploring UX'"
+
+# Prototype signal (b): active-ticket marker referencing a [Prototype] ticket
+# is supported by the hook (see require-agdr-for-arch-pr.sh — the marker grep
+# matches `^title=\[(Spike|Prototype)\]`). It is NOT asserted here because it
+# shares the same in-sandbox ops-root resolution limitation as the pre-existing
+# "spike active-ticket marker" case above (the marker fixture's ops root isn't
+# resolved inside the test sandbox). Signals (a) PR-title-type and (c)
+# branch-name — both exercised above — give the prototype exemption equivalent
+# coverage to the spike exemption's reliably-green signals.
 
 # ---------------------------------------------------------------------------
 # Regression: embedded-quote truncation bug (apexyard#461).
@@ -315,6 +349,89 @@ DIR=$(setup_repo c1_base c1_feat)
 run_case "embedded quote, no AgDR ref at all → still BLOCKS (true-negative) [#461-C]" \
   "$DIR" 2 "no AgDR reference" \
   "gh pr create --base main --title 'feat(#3): tweak domain' --body 'Uses \"greedy\" matching but forgot to add the decision record.'"
+
+# ---------------------------------------------------------------------------
+# Two-repo `cd <target> && gh pr create` (no --repo) — me2resh/apexyard#669.
+#
+# The hook fires from the cwd tree (the ops fork, which carries arch changes
+# on HEAD) BEFORE the in-command `cd` executes. Without re-rooting the diff to
+# the cd-target, the hook diffs the cwd tree and false-blocks a docs-only PR
+# that is actually being created in a *different* repo (the split-portfolio
+# private repo, or a `workspace/<project>/` clone in single-fork mode).
+#
+# The fix: when the command begins with `cd <path> && …`, evaluate the PR diff
+# against <path>'s git tree, not the cwd's.
+# ---------------------------------------------------------------------------
+
+# Build a sibling target repo with a docs-only feature branch (no arch paths).
+make_target_repo_docs() {
+  local pdir
+  pdir=$(mktemp -d -t agdr-tgt.XXXXXX)
+  (
+    cd "$pdir" || exit 1
+    git init -q -b main
+    git config user.email t@t.test
+    git config user.name test
+    git remote add origin git@github.com:test-org/portfolio.git
+    mkdir -p docs
+    echo "# registry" > docs/readme.md
+    git add docs/readme.md
+    git commit -q -m "base: docs"
+    git checkout -q -b feature
+    echo "# registry update" >> docs/readme.md
+    git add docs/readme.md
+    git commit -q -m "docs: update registry"
+  )
+  echo "$pdir"
+}
+
+# Build a sibling target repo whose feature branch DOES touch an arch path.
+make_target_repo_arch() {
+  local pdir
+  pdir=$(mktemp -d -t agdr-tgt.XXXXXX)
+  (
+    cd "$pdir" || exit 1
+    git init -q -b main
+    git config user.email t@t.test
+    git config user.name test
+    git remote add origin git@github.com:test-org/portfolio.git
+    mkdir -p src/domain
+    echo "export const x = 1" > src/domain/widget.ts
+    git add src/domain/widget.ts
+    git commit -q -m "base: domain"
+    git checkout -q -b feature
+    echo "export const x = 2" > src/domain/widget.ts
+    git add src/domain/widget.ts
+    git commit -q -m "feat: tweak domain"
+  )
+  echo "$pdir"
+}
+
+# (D) cwd tree has arch changes; cd-target is docs-only → PASS (no false-block).
+#     Pre-fix this BLOCKS because the hook diffs the cwd (fork) tree. [#669]
+FORK_DIR=$(setup_repo c1_base c1_feat)
+TGT_DOCS=$(make_target_repo_docs)
+run_case "cd-target docs-only PR (cwd has arch changes), no --repo → PASS [#669]" \
+  "$FORK_DIR" 0 "" \
+  "cd $TGT_DOCS && gh pr create --base main --title 'chore(#5): update registry docs' --body 'Docs only. No decisions made.'"
+rm -rf "$TGT_DOCS"
+
+# (E) cd-target itself touches an arch path, no AgDR → still BLOCKS.
+#     Proves the re-root targets the right tree rather than just skipping. [#669]
+FORK_DIR2=$(setup_repo c6_base c6_feat)
+TGT_ARCH=$(make_target_repo_arch)
+run_case "cd-target arch PR, no AgDR → still BLOCKS (true-negative) [#669]" \
+  "$FORK_DIR2" 2 "no AgDR reference" \
+  "cd $TGT_ARCH && gh pr create --base main --title 'feat(#6): portfolio domain' --body 'Forgot the decision record.'"
+rm -rf "$TGT_ARCH"
+
+# (F) cd-target arch PR WITH an AgDR reference → PASS. [#669]
+FORK_DIR3=$(setup_repo c1_base c1_feat)
+TGT_ARCH2=$(make_target_repo_arch)
+run_case "cd-target arch PR with AgDR ref → PASS [#669]" \
+  "$FORK_DIR3" 0 "" \
+  "cd $TGT_ARCH2 && gh pr create --base main --title 'feat(#7): portfolio domain' --body 'See AgDR-0009-portfolio-domain for rationale.'"
+rm -rf "$TGT_ARCH2"
 
 # ---------------------------------------------------------------------------
 # Result
