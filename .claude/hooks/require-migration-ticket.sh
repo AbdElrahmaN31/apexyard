@@ -264,30 +264,81 @@ MSG
 fi
 
 # --------- Gate 2: issue is open + has migration label ---------
-ISSUE_JSON=$(gh issue view "$TICKET_NUM" --repo "$TICKET_REPO" --json state,labels,body 2>/dev/null)
+# Resolve the ticket through the tracker abstraction (_lib-tracker.sh) so this
+# gate works for every configured tracker — GitHub (gh), GitLab (glab), Linear,
+# Jira, Asana, custom — not just GitHub. Before #755 this hardcoded
+# `gh issue view`, which returned empty for GitLab-tracked projects and
+# false-blocked every migration edit even when the GitLab ticket was valid.
+# tracker_view emits the normalised {state,title,url,labels,body} shape
+# regardless of tracker; labels come back as a flat string array and body is
+# populated for gh/glab (the kinds the migration gate reads).
+if [ -f "$HOOK_DIR/_lib-tracker.sh" ]; then
+  # shellcheck source=/dev/null
+  . "$HOOK_DIR/_lib-tracker.sh"
+fi
+
+# Resolve the tracker kind for the TICKET's repo (per-project registry override
+# wins over the global config; see #670). tracker.kind=none has no queryable
+# tracker, so existence / label / AgDR can't be verified online — per the #755
+# Expected behaviour, skip the online gates (Gate 1 already proved an active
+# ticket marker exists) and allow the edit, operator-trusted. The skip is
+# printed to stderr so it is auditable, never silent.
+TICKET_KIND="gh"
+if command -v tracker_kind >/dev/null 2>&1; then
+  TICKET_KIND=$(tracker_kind "$TICKET_REPO" 2>/dev/null)
+  [ -n "$TICKET_KIND" ] || TICKET_KIND="gh"
+fi
+if [ "$TICKET_KIND" = "none" ]; then
+  echo "note: tracker.kind=none for ${TICKET_REPO} — skipping migration label/AgDR verification (operator-trusted; #755)." >&2
+  exit 0
+fi
+
+if command -v tracker_view >/dev/null 2>&1; then
+  ISSUE_JSON=$(tracker_view "$TICKET_NUM" "$TICKET_REPO" 2>/dev/null)
+else
+  # Library missing (should not happen in a real fork) — fall back to gh so the
+  # gate still functions on a GitHub tracker rather than bricking, normalising
+  # to the same shape tracker_view emits (labels as a flat string array).
+  ISSUE_JSON=$(gh issue view "$TICKET_NUM" --repo "$TICKET_REPO" --json state,title,url,labels,body 2>/dev/null \
+    | jq -c '{state,title,url,labels:((.labels // []) | map(.name)),body}' 2>/dev/null)
+fi
+
 if [ -z "$ISSUE_JSON" ]; then
   cat >&2 <<MSG
-BLOCKED: Could not fetch ${TICKET_REPO}#${TICKET_NUM} from GitHub.
-Network / auth problem? Or the issue doesn't exist?
+BLOCKED: Could not fetch ${TICKET_REPO}#${TICKET_NUM} from the configured
+tracker (kind: ${TICKET_KIND}). Network / auth problem? Or the issue
+doesn't exist?
 
-Migration files can't be edited without a verifiable migration ticket.
-Check your gh auth status, or run /migration to create a new ticket.
+The migration gate is fail-closed by design — a high-blast-radius change is
+not allowed against a ticket the framework cannot verify. (This is stricter
+than the PR-create / commit-ref existence checks, which fall back to
+shape-only when a non-gh CLI is unreachable, per #501 — a migration edit
+warrants a hard stop.) If your tracker is untracked, set tracker.kind=none.
+
+Check your tracker auth (e.g. gh auth status / glab auth status), or run
+/migration to create a new ticket.
 MSG
   exit 2
 fi
 
-STATE=$(echo "$ISSUE_JSON" | jq -r .state)
-HAS_LABEL=$(echo "$ISSUE_JSON" | jq -r --arg L "$MIGRATION_LABEL" '.labels | map(.name) | index($L) != null')
-BODY=$(echo "$ISSUE_JSON" | jq -r .body)
+STATE=$(echo "$ISSUE_JSON" | jq -r '.state // empty')
+# Normalised labels are a flat string array, so a direct membership test.
+HAS_LABEL=$(echo "$ISSUE_JSON" | jq -r --arg L "$MIGRATION_LABEL" '.labels | index($L) != null')
+BODY=$(echo "$ISSUE_JSON" | jq -r '.body // empty')
 
-if [ "$STATE" != "OPEN" ]; then
-  cat >&2 <<MSG
-BLOCKED: Active ticket ${TICKET_REPO}#${TICKET_NUM} is $STATE, not OPEN.
+# Closed-state recognition is tracker-agnostic — same vocabulary as
+# validate-pr-create.sh / verify-commit-refs.sh: gh/glab "CLOSED", Linear
+# "Done", Jira "Resolved", Asana "Closed", etc.
+STATE_LC=$(echo "$STATE" | tr '[:upper:]' '[:lower:]')
+case "$STATE_LC" in
+  closed|done|cancelled|canceled|resolved|completed)
+    cat >&2 <<MSG
+BLOCKED: Active ticket ${TICKET_REPO}#${TICKET_NUM} is "$STATE", not open.
 Migration files require an OPEN labelled ticket. Run /migration to create
 a fresh one, or /start-ticket on a different OPEN migration ticket.
 MSG
-  exit 2
-fi
+    exit 2 ;;
+esac
 
 if [ "$HAS_LABEL" != "true" ]; then
   cat >&2 <<MSG

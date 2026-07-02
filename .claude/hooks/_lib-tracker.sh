@@ -16,7 +16,12 @@
 #   tracker_owner_repo_param <slug>    formats the owner/repo parameter (gh: "owner/repo"; others: empty)
 #   tracker_view <id> [<owner_repo>]   dispatches the view command and emits normalised JSON on stdout
 #                                      Exit 0 = ticket exists; non-zero = doesn't, or CLI errored.
-#                                      JSON shape: {"state":..., "title":..., "url":..., "labels":[...]}
+#                                      JSON shape: {"state":..., "title":..., "url":..., "labels":[...], "body":...}
+#                                      `body` is populated for the gh and glab adapters (the kinds
+#                                      that have a consumer needing it — the migration gate reads it
+#                                      to find the linked AgDR, #755). Other adapters emit body:""
+#                                      until a consumer needs it (jira `.description` is ADF, not a
+#                                      grep-able string; linear/asana bodies have no consumer yet).
 #
 # Per-project resolution (#670 / AgDR-0072): tracker_kind / tracker_id_pattern /
 # tracker_view take an OPTIONAL owner/repo. When supplied, a `tracker:` block on
@@ -208,7 +213,7 @@ tracker_id_pattern() {
 # ------------------------------------------------------------------------------
 _TRACKER_VIEW_TPL_CACHE=""
 _tracker_view_template() {
-  local repo="${1:-}"
+  local repo="${1:-}" kind="${2:-}"
   if [ -n "$repo" ]; then
     local pv
     if pv=$(_tracker_project_value "$repo" view_command) && [ -n "$pv" ]; then
@@ -222,9 +227,21 @@ _tracker_view_template() {
   fi
   _tracker_load_config_lib
   local tpl
-  tpl=$(config_get_or '.tracker.view_command' 'gh issue view {id} --repo {owner_repo} --json state,title,url,labels' 2>/dev/null)
+  # An explicit .tracker.view_command (registry per-project or config) always
+  # wins. With none set, fall back to a per-KIND built-in default: glab gets a
+  # first-class GitLab command (parity with _tracker_create_glab, #755); every
+  # other kind gets the gh shape. linear/jira/asana adopters still supply their
+  # own view_command (unchanged contract) — they only land on the gh default if
+  # they forgot to set one. The default view_command is deliberately NOT pinned
+  # in project-config.defaults.json, so this kind-aware fallback can fire (a
+  # pinned default would deep-merge over a glab adopter's `kind: glab` and force
+  # the gh command — the exact #755 bug at the config layer).
+  tpl=$(config_get_or '.tracker.view_command' '' 2>/dev/null)
   if [ -z "$tpl" ] || [ "$tpl" = "null" ]; then
-    tpl='gh issue view {id} --repo {owner_repo} --json state,title,url,labels'
+    case "$kind" in
+      glab) tpl='glab issue view {id} -R {owner_repo} --output json' ;;
+      *)    tpl='gh issue view {id} --repo {owner_repo} --json state,title,url,labels,body' ;;
+    esac
   fi
   if [ -z "$repo" ]; then
     _TRACKER_VIEW_TPL_CACHE="$tpl"
@@ -260,8 +277,8 @@ _tracker_substitute() {
 # Internal adapter: gh → normalised JSON.
 #
 # Reads `gh issue view` JSON. The default view_command requests state, title,
-# url, labels — labels comes back as an array of objects with .name keys, so
-# we flatten to a string array.
+# url, labels, body — labels comes back as an array of objects with .name keys,
+# so we flatten to a string array; body is passed through verbatim.
 # ------------------------------------------------------------------------------
 _tracker_normalise_gh() {
   local raw="$1"
@@ -276,7 +293,32 @@ _tracker_normalise_gh() {
     state:  (.state // ""),
     title:  (.title // ""),
     url:    (.url // ""),
-    labels: ((.labels // []) | map(if type == "object" then .name else . end))
+    labels: ((.labels // []) | map(if type == "object" then .name else . end)),
+    body:   (.body // "")
+  }' 2>/dev/null
+}
+
+# ------------------------------------------------------------------------------
+# Internal adapter: glab (GitLab) → normalised JSON.
+#
+# `glab issue view <id> -R <repo> --output json` emits the GitLab REST issue
+# object: .state is "opened"/"closed", .web_url is the URL, .description is the
+# body, and .labels is already an array of strings. State is normalised to
+# OPEN/CLOSED for contract parity with the gh adapter (downstream closed-state
+# classification is case-insensitive, so either casing works — parity is for
+# consumers that read .state directly). glab is a first-class view kind
+# alongside gh, mirroring the existing _tracker_create_glab creation adapter.
+# ------------------------------------------------------------------------------
+_tracker_normalise_glab() {
+  local raw="$1"
+  if [ -z "$raw" ]; then return 1; fi
+  if ! printf '%s' "$raw" | jq -e . >/dev/null 2>&1; then return 1; fi
+  printf '%s' "$raw" | jq -c '{
+    state:  ((.state // "") | if . == "opened" then "OPEN" elif . == "closed" then "CLOSED" else (. | ascii_upcase) end),
+    title:  (.title // ""),
+    url:    (.web_url // .url // ""),
+    labels: ((.labels // []) | map(if type == "object" then .name else . end)),
+    body:   (.description // .body // "")
   }' 2>/dev/null
 }
 
@@ -399,7 +441,7 @@ tracker_view() {
   fi
 
   local tpl cmd raw rc
-  tpl=$(_tracker_view_template "$owner_repo")
+  tpl=$(_tracker_view_template "$owner_repo" "$kind")
   cmd=$(_tracker_substitute "$tpl" "$id" "$owner_repo")
 
   # Run the command; capture stdout. Suppress stderr (CLI errors are visible
@@ -413,6 +455,7 @@ tracker_view() {
   local normalised
   case "$kind" in
     gh)     normalised=$(_tracker_normalise_gh "$raw") ;;
+    glab)   normalised=$(_tracker_normalise_glab "$raw") ;;
     linear) normalised=$(_tracker_normalise_linear "$raw") ;;
     jira)   normalised=$(_tracker_normalise_jira "$raw") ;;
     asana)  normalised=$(_tracker_normalise_asana "$raw") ;;
