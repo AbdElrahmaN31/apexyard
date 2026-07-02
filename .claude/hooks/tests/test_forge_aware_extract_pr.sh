@@ -118,6 +118,14 @@ assert_eq "extract_repo glab -R flag" "o/r" "$(extract_repo_from_command 'glab m
 assert_eq "extract_repo glab --repo flag" "o/r" "$(extract_repo_from_command 'glab mr merge 42 --repo o/r')"
 assert_eq "extract_repo glab fallback via glab repo view" "o/r" "$(PATH="$SB/bin:$PATH" extract_repo_from_command 'glab mr merge 42')"
 
+# --- repo-flag search is span-fenced: a trailing unrelated -R in a compound
+#     command must NOT be captured (Rex finding on PR #767). ---
+assert_eq "extract_repo gh compound: trailing 'grep -R' ignored" "o/r" \
+  "$(extract_repo_from_command 'gh pr merge 42 --repo o/r && grep -R foo .')"
+assert_eq "extract_repo glab compound: trailing 'grep -R' ignored" "o/r" \
+  "$(extract_repo_from_command 'glab mr merge 42 -R o/r && grep -R foo .')"
+assert_false merge_command_uses_variable 'gh pr merge 42 --repo o/r && grep -R $HOME .'
+
 # --- resolve_pr_head / resolve_pr_head_branch: glab path (kind=glab) ---
 tracker_clear_cache 2>/dev/null || true
 assert_eq "resolve_pr_head glab → .sha" "glabsha0000000000000000000000000000000042" \

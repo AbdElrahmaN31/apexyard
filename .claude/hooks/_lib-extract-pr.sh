@@ -241,10 +241,12 @@ merge_command_uses_variable() {
     return 0
   fi
 
-  # repo value (same quoted-or-bare variable forms). Covers gh/glab `--repo` and
-  # glab's short `-R` flag (#764).
+  # repo value (same quoted-or-bare variable forms). Covers `--repo` and the
+  # short `-R` alias (#764). Searched within clean_span (the fenced merge span),
+  # not the whole command, so a trailing unrelated `-R` in a compound command
+  # can't be picked up.
   local repo_token
-  repo_token=$(echo "$cmd" | sed -nE 's/.*(--repo|-R)[[:space:]]+([^[:space:]]+).*/\2/p' | head -1)
+  repo_token=$(echo "$clean_span" | sed -nE 's/.*(--repo|-R)[[:space:]]+([^[:space:]]+).*/\2/p' | head -1)
   if echo "$repo_token" | grep -qE '^["'"'"']?\$\{?[A-Za-z_]'; then
     return 0
   fi
@@ -356,9 +358,15 @@ extract_repo_from_command() {
   repo=$(echo "$cmd" | grep -oE 'repos/[^/[:space:]]+/[^/[:space:]]+/pulls/[0-9]+/merge' \
     | sed -nE 's|repos/([^/]+/[^/]+)/pulls/.*|\1|p' | head -1)
 
-  # 2. Repo flag on the merge command: gh/glab `--repo` or glab's short `-R` (#764).
+  # 2. Repo flag on the merge command: gh/glab `--repo` or the short `-R` alias
+  #    (both gh and glab accept `-R`) (#764). Search ONLY within the merge-command
+  #    span (fenced at the first shell separator, like extract_pr_number) so a
+  #    trailing unrelated `-R` in a compound command — e.g. `... && grep -R foo` —
+  #    cannot be mistaken for the merge target's repo.
   if [ -z "$repo" ]; then
-    repo=$(echo "$cmd" | sed -nE 's/.*(--repo|-R)[[:space:]]+([^[:space:]]+).*/\2/p' | head -1)
+    local mspan
+    mspan=$(echo "$cmd" | grep -oE '\b(gh\s+pr|glab\s+mr)\s+merge\b[^|;&]*')
+    repo=$(echo "$mspan" | sed -nE 's/.*(--repo|-R)[[:space:]]+([^[:space:]]+).*/\2/p' | head -1)
   fi
 
   # 3. Last resort: ask the forge which repo the current branch's PR/MR belongs
