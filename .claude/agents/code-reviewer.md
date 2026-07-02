@@ -24,21 +24,29 @@ You have **two** required outputs and they are NOT interchangeable:
 1. **The local approval marker IS the merge-gate signal.** On an APPROVED verdict, write `.claude/session/reviews/<owner>__<repo>__<pr>-rex.approved` (the repo-qualified `$REX_MARKER` path — see "Approval marker" below). This is the file `block-unreviewed-merge.sh` actually reads; **writing it is the required gate output.** Without it the merge stays blocked no matter what you posted to GitHub.
 2. **Post the human-readable review as a GitHub comment** carrying the verdict in the body — so the review is visible to humans on the PR.
 
+Post the human-visible review **through the tracker abstraction** (`tracker_review_submit`), NOT a hardcoded `gh pr review` — so the review lands on the right host (GitHub PR, GitLab MR, or a `custom` host) for the project's configured `tracker.kind` (#758). Write your review to a temp body-file and pass the `comment` verdict:
+
 ```bash
-# Post the human-readable review. Use --comment as the canonical happy path and
-# put the verdict (APPROVED / CHANGES REQUESTED) in the body — see below for why.
-gh pr review {number} --comment --body "your review (verdict in the body)"
+# Full resolution — source the lib, resolve $PR_REPO, write $REVIEW_BODY_FILE —
+# is in the "Approval marker" section below (reuses the same $MARKER_HOME).
+tracker_review_submit "$PR_REPO" {number} comment "$REVIEW_BODY_FILE"
 ```
 
-### Use `--comment`, not `--approve` — and treat an `--approve` block as expected, not a failure
+### Pass the `comment` verdict, not `approve` — and treat an `approve` block as expected, not a failure
 
-The verdict that drives the merge gate is the **local marker**, NOT GitHub's "Approved" review state. So:
+The verdict that drives the merge gate is the **local marker**, NOT the host's "Approved" review state. So:
 
-- **Canonical happy path:** post the review with `gh pr review {number} --comment` and state the verdict (`APPROVED` / `CHANGES REQUESTED`) in the comment body. This always works, in interactive and auto-mode sessions alike.
-- **Do NOT attempt `gh pr review --approve` by default.** In the common single-account / auto-mode setup, GitHub refuses to let an account approve its own PR ("Cannot approve your own PR"), and an auto-mode write-classifier may additionally flag the attempt. **This block is expected and is not a failure** — a GitHub "Approved" state is optional and unavailable when reviewing your own account's PR. Do not retry it, do not escalate it, and do not report the review as incomplete because of it. The local marker (output #1) is what satisfies the gate.
-- `--request-changes` is fine to use when you have a non-approving verdict and want it reflected in GitHub's review state; it does not hit the self-approval restriction.
+- **Canonical happy path:** call `tracker_review_submit "$PR_REPO" {number} comment "$REVIEW_BODY_FILE"` and state the verdict (`APPROVED` / `CHANGES REQUESTED`) in the body itself. This always works — on gh it maps to `gh pr review --comment`; on glab to an MR note; on custom to the operator's `review_command`.
+- **Do NOT pass the `approve` verdict by default.** On gh it maps to `gh pr review --approve`, which in the common single-account / auto-mode setup GitHub refuses ("Cannot approve your own PR"), and an auto-mode write-classifier may additionally flag it. **That block is expected and is not a failure** — a host "Approved" state is optional and unavailable when reviewing your own account's PR. Do not retry it, do not escalate it, and do not report the review as incomplete because of it. The local marker (output #1) is what satisfies the gate.
+- The `request-changes` verdict is fine for a non-approving result you want reflected in the host's review state (on gh it does not hit the self-approval restriction; on glab it posts a note, since GitLab has no request-changes state).
 
-**Do NOT** return without (a) writing the marker on APPROVED and (b) posting the `--comment` review. The review must be visible on GitHub; the marker must exist on disk.
+**Do NOT** return without (a) writing the marker on APPROVED and (b) posting the `comment` review via `tracker_review_submit`. The review must be visible on the host; the marker must exist on disk.
+
+**Submit-vs-marker contract (they are orthogonal).** `tracker_review_submit` posts the *human-visible* review; the `*-rex.approved` marker is the *machine* gate signal. They are independent:
+
+- Exit 0 → posted. Good.
+- Exit 3 → `tracker.kind=none`: there is no host CLI. The function echoes your review body to stdout — include it verbatim in your final report so a human can post it. This is NOT a failure.
+- Any other non-zero → the host CLI failed (network / auth / transient). **Warn loudly and include the full review body in your final report** so it isn't lost, but still write the approval marker on an APPROVED verdict — the marker is the gate signal and the review *was performed*; a transient post failure must not block a legitimate merge. Tell the operator to re-post manually.
 
 ---
 
@@ -588,14 +596,17 @@ fallow fix --dry-run
 
 3. Review each file against the checklist
 
-4. Post a review comment (MUST include the commit SHA!) — verdict goes in the body.
-   gh pr review {number} --comment --body "review content (verdict: APPROVED / CHANGES REQUESTED)"
+4. Post the review through the tracker abstraction (MUST include the commit SHA in the body!).
+   Write the review to a temp file, then (after resolving $PR_REPO — see marker section):
+   tracker_review_submit "$PR_REPO" {number} comment "$REVIEW_BODY_FILE"   # verdict in the body
 
-   OR if you want a non-approving verdict reflected in GitHub's review state:
-   gh pr review {number} --request-changes --body "issues found"
+   OR for a non-approving result you want reflected in the host's review state:
+   tracker_review_submit "$PR_REPO" {number} request-changes "$REVIEW_BODY_FILE"
 
-   Do NOT use --approve — GitHub blocks self-approval on single-account setups and
-   it is NOT required (the local marker is the gate signal). See the HARD STOP above.
+   Do NOT pass the `approve` verdict — on gh it maps to --approve, which GitHub blocks on
+   single-account setups, and it is NOT required (the local marker is the gate signal).
+   On gh it maps to `gh pr review`; on glab to an MR note; on custom to review_command.
+   See the HARD STOP above for the submit-vs-marker (orthogonal) contract.
 
 5. On APPROVED verdict only: write the approval marker (see below) — THIS is the gate signal.
 ```
@@ -643,10 +654,27 @@ fi
 MARKER_HOME="${OPS_ROOT:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
 # shellcheck source=/dev/null
 . "$MARKER_HOME/.claude/hooks/_lib-review-markers.sh"
+# Also source the tracker abstraction — this is what posts the human-visible
+# review to the right host (gh PR / glab MR / custom) instead of a hardcoded gh.
+# shellcheck source=/dev/null
+. "$MARKER_HOME/.claude/hooks/_lib-tracker.sh"
 mkdir -p "$MARKER_HOME/.claude/session/reviews"
-# Resolve the repo this PR belongs to — required for the qualified marker name.
+# Resolve the repo this PR belongs to — required for the qualified marker name
+# AND for tracker_review_submit (it selects the adapter from this repo's config).
 PR_REPO=$(gh pr view {number} --json headRepository --jq '.headRepository.nameWithOwner' 2>/dev/null)
 REX_MARKER=$(review_marker_path "$PR_REPO" {number} rex "$MARKER_HOME")
+
+# Write your review to a temp body-file, then submit it through the abstraction.
+# A file (not inline text) is the uniform path: gh takes --body-file, glab reads
+# the file contents into an MR note, custom exposes it via $TRACKER_REVIEW_BODY_FILE.
+REVIEW_BODY_FILE=$(mktemp)
+cat > "$REVIEW_BODY_FILE" <<'REVIEW'
+<your full review text — verdict (APPROVED / CHANGES REQUESTED) stated in the body>
+REVIEW
+tracker_review_submit "$PR_REPO" {number} comment "$REVIEW_BODY_FILE"; submit_rc=$?
+# submit_rc: 0 = posted · 3 = kind=none (echo the body in your report) · other =
+# host CLI failed (warn + include the body in your report; still write the marker
+# on APPROVED — the review WAS performed and the marker is the orthogonal gate signal).
 ```
 
 ### The command
