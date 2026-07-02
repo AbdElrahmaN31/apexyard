@@ -106,8 +106,16 @@ MARKER_HOME="${OPS_ROOT:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
 # Source the marker path helper — repo-qualified naming (#485, AgDR-0060).
 # shellcheck source=/dev/null
 . "$MARKER_HOME/.claude/hooks/_lib-review-markers.sh"
+# The PR's HEAD (fork) repo — used ONLY as the hint/fallback for the base resolver.
 PR_REPO=$(gh pr view <pr> --json headRepository --jq '.headRepository.nameWithOwner' 2>/dev/null)
-REX=$(review_marker_path "$PR_REPO" <pr> rex "$MARKER_HOME")
+# The PR's BASE (host) repo — the canonical marker key AND the repo you merge
+# against. Rex wrote its marker under the BASE (that is what code-reviewer.md and
+# the merge gate use, #765), so read + write markers here. `pr_base_repo` parses
+# the PR URL and falls back to PR_REPO when base == head, so same-repo PRs are
+# unchanged. Use $PR_HOST_REPO as `--repo` for EVERY gh call in this skill
+# (`<owner/repo>` throughout = $PR_HOST_REPO) — you cannot merge a fork's copy.
+PR_HOST_REPO=$(pr_base_repo <pr> "$PR_REPO")
+REX=$(review_marker_path "$PR_HOST_REPO" <pr> rex "$MARKER_HOME")
 [ -f "$REX" ] && [ "$(tr -d '[:space:]' < "$REX")" = "<headRefOid from step 3>" ]
 ```
 
@@ -143,14 +151,16 @@ Optional fields the gate stores but doesn't validate:
 Use the **ops fork root** as the path anchor (NOT git toplevel — see #229 + #230 for the workspace-clone bug this avoids). Reuse the same MARKER_HOME and the `_lib-review-markers.sh` helper (already sourced in step 4):
 
 ```bash
-# (MARKER_HOME and PR_REPO already resolved in step 4 — reuse them here.)
+# (MARKER_HOME and PR_HOST_REPO already resolved in step 4 — reuse them here.)
 mkdir -p "$MARKER_HOME/.claude/session/reviews"
 ts=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
 
 # Sanitise: drop newlines, drop shell-special chars, truncate to 200.
 summary=$(echo "<user approval message>" | tr '\n' ' ' | tr -d '"`$\\' | cut -c1-200)
 
-CEO=$(review_marker_path "$PR_REPO" <pr> ceo "$MARKER_HOME")
+# CEO marker keyed on the BASE repo — same key as Rex's marker and the gate's
+# lookup (#765). Keying it on the fork would leave a cross-fork merge blocked.
+CEO=$(review_marker_path "$PR_HOST_REPO" <pr> ceo "$MARKER_HOME")
 cat > "$CEO" <<EOF
 sha=<headRefOid>
 approved_by=user
@@ -168,8 +178,8 @@ Before running the merge, check whether this is a **sync-class PR**. A PR is syn
 - Its PR title starts with `sync(` (the canonical `/release-sync` PR title prefix)
 
 ```bash
-PR_HEAD_BRANCH=$(gh pr view <pr> --repo <owner/repo> --json headRefName -q '.headRefName' 2>/dev/null)
-PR_TITLE=$(gh pr view <pr> --repo <owner/repo> --json title -q '.title' 2>/dev/null)
+PR_HEAD_BRANCH=$(gh pr view <pr> --repo "$PR_HOST_REPO" --json headRefName -q '.headRefName' 2>/dev/null)
+PR_TITLE=$(gh pr view <pr> --repo "$PR_HOST_REPO" --json title -q '.title' 2>/dev/null)
 
 MERGE_STRATEGY="squash"  # default for all other PRs — bare enum, not a CLI flag (tracker_pr_merge normalises it per-forge)
 if echo "$PR_HEAD_BRANCH" | grep -qE '^sync/main-to-dev-after-' || \
@@ -205,8 +215,12 @@ Unless `--no-merge` was passed, run the merge in the same turn via the tracker-a
 # equivalent for matcher purposes. Redirect the JSON result to a temp file
 # instead, and read it back in a separate step — `cat` isn't a merge
 # command, so wrapping THAT in `$(...)` is fine.
+#
+# The repo argument is $PR_HOST_REPO — the PR's BASE repo (#765). On a cross-fork
+# PR you cannot merge the fork's copy; the merge, like every other host call in
+# this skill, must target the base (`<owner/repo>` throughout = $PR_HOST_REPO).
 MERGE_RESULT_FILE=$(mktemp)
-tracker_pr_merge "<owner/repo>" "<pr>" "${MERGE_STRATEGY}" true > "$MERGE_RESULT_FILE"
+tracker_pr_merge "$PR_HOST_REPO" "<pr>" "${MERGE_STRATEGY}" true > "$MERGE_RESULT_FILE"
 MERGE_RC=$?
 MERGE_RESULT="$(cat "$MERGE_RESULT_FILE")"
 MERGE_SHA=$(printf '%s' "$MERGE_RESULT" | jq -r '.sha // empty' 2>/dev/null)

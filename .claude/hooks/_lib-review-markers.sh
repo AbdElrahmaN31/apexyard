@@ -88,3 +88,54 @@ review_marker_path() {
 
   printf '%s/%s__%s-%s.approved' "$reviews_dir" "$safe_repo" "$pr" "$role"
 }
+
+# pr_base_repo <pr> [hint_repo]
+#
+# Echoes the PR/MR's BASE (host) repo as "owner/repo" — the repo the PR *lives
+# on* and is numbered against. This is the canonical key for approval markers
+# (me2resh/apexyard#765).
+#
+# WHY THE BASE REPO IS CANONICAL
+# ------------------------------
+# The merge gates (block-unreviewed-merge.sh, require-architecture-review.sh,
+# require-design-review-for-ui.sh) derive their marker-lookup repo (`CMD_REPO`)
+# from the merge command's `--repo` value or `gh api repos/<o>/<r>/pulls/.../merge`
+# path. For a CROSS-FORK PR that is ALWAYS the base repo — you cannot merge a
+# fork's copy (`gh pr merge <n> --repo <fork>` errors; the PR doesn't live
+# there). So `merge --repo == CMD_REPO == base`. Historically the marker WRITERS
+# keyed on `headRepository` (the fork) instead, so on a cross-fork PR the marker
+# was written under the fork qualifier while the gate searched under the base →
+# a valid approval never satisfied the gate. Keying every writer on the base via
+# this helper makes writer/reader agreement STRUCTURAL, not coincidental.
+#
+# `gh pr view` exposes no baseRepository field, but the PR URL is ALWAYS rooted
+# on the base repo — parse owner/repo from it (handles GitHub /pull/ and GitLab
+# /-/merge_requests/, including nested GitLab groups). Falls back to <hint_repo>
+# (typically the headRepository value) when the URL can't be parsed or gh is
+# unavailable — so SAME-REPO PRs (base == head) resolve exactly as before and
+# this change is a provable no-op for them.
+#
+# Args:
+#   pr        — the PR/MR number.
+#   hint_repo — optional "owner/repo": scopes the gh query with --repo AND is the
+#               fallback when URL parsing yields nothing.
+#
+# Output (stdout): "owner/repo", or the hint (or empty) when unresolved.
+pr_base_repo() {
+  local pr="${1:-}" hint="${2:-}" url base
+  if [ -z "$pr" ]; then
+    [ -n "$hint" ] && printf '%s' "$hint"
+    return 0
+  fi
+  if [ -n "$hint" ]; then
+    url=$(gh pr view "$pr" --repo "$hint" --json url --jq '.url' 2>/dev/null)
+  else
+    url=$(gh pr view "$pr" --json url --jq '.url' 2>/dev/null)
+  fi
+  base=$(printf '%s' "$url" | sed -E 's#^https?://[^/]+/(.+)/(pull|-/merge_requests)/[0-9].*#\1#')
+  if [ -n "$base" ] && [ "$base" != "$url" ]; then
+    printf '%s' "$base"
+  else
+    [ -n "$hint" ] && printf '%s' "$hint"
+  fi
+}
