@@ -79,7 +79,7 @@ Because Option A points the design the wrong way (parsing GitHub's DSL) and Opti
 
 - **Backward-compatible.** A github-kind fork sees byte-for-byte the same `gh issue list` results (the gh adapter renders the same flags). The default-config regression suite locks this in.
 - **Skills are partially converted by design.** Issue-axis tracker-agnostic; forge-axis (`gh pr list`) still `gh`-coupled until #711. Stated in every #710 PR body to prevent a false "it's fully abstracted" read.
-- **Some filters degrade on non-GitHub trackers** (`assignee=none`, `since`, `mentions:`, `commenter:`) — documented per-filter. Degradation is "empty / client-side," never a crash.
+- **Some filters degrade on non-GitHub trackers** (`assignee=none`, `since`, `mentions:`, `commenter:`) — documented per-filter. Degradation is "empty / client-side," never a crash. The client-side `since` filter (glab / custom) **keeps** items with no `updatedAt` rather than dropping them — recency is unknowable for such items, and silently hiding one is worse than surfacing it.
 - **`tracker_list` is a read, not a create** — it is **not** added to `ticket.create_command_patterns` (that guard is for creation). Listing needs no skill gate.
 - **glab list adapter is written against the real CLI**, not recall — `glab issue list --help` confirms `--assignee=@me`, `--author`, `--label` (repeatable), `--search`+`--in`, `-O json`, `--opened`/`--closed`/`--all`. The one gap (`assignee=none`) is a known degradation.
 - **Per-project resolution needs a YAML parser** (`yq` / `python3`+PyYAML), inheriting AgDR-0072's known edge: with no parser, a per-project `tracker:` block is silently ignored and the global tracker is used. Tests SKIP (not fail) when no parser is present, mirroring the `jq` guard.

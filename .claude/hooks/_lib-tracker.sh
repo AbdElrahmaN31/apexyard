@@ -945,10 +945,13 @@ tracker_list() {
   fi
 
   # Client-side `since` for adapters that don't apply it server-side (glab /
-  # custom). gh already handled it via the search qualifier above.
+  # custom). gh already handled it via the search qualifier above. Items with no
+  # `updatedAt` are KEPT (not silently dropped) — recency is unknowable for them,
+  # and hiding an item the user can't date is worse than surfacing it. Only items
+  # with a known, older `updatedAt` are filtered out.
   if [ -n "$f_since" ] && [ "$kind" != "gh" ]; then
     normalised=$(printf '%s' "$normalised" | jq -c --arg since "$f_since" \
-      'map(select((.updatedAt // "") >= $since))' 2>/dev/null)
+      'map(select((.updatedAt // "") == "" or (.updatedAt >= $since)))' 2>/dev/null)
     [ -z "$normalised" ] && normalised='[]'
   fi
 

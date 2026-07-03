@@ -129,6 +129,12 @@ tracker_clear_cache
 PATH="$SB/bin:$PATH" GH_CAPTURE="$SB/cap4" tracker_list "o/r" state=closed since=2026-06-01 >/dev/null
 assert_eq "gh since+closed → closed:>= qualifier" "closed:>=2026-06-01" "$(awk 'p{print;exit} $0=="--search"{p=1}' "$SB/cap4")"
 
+# Case 4b — since with DEFAULT state (open) → `updated:>=<date>` qualifier (the
+# non-closed branch of the since mapping).
+tracker_clear_cache
+PATH="$SB/bin:$PATH" GH_CAPTURE="$SB/cap4b" tracker_list "o/r" since=2026-06-01 >/dev/null
+assert_eq "gh since default(open) → updated:>= qualifier" "updated:>=2026-06-01" "$(awk 'p{print;exit} $0=="--search"{p=1}' "$SB/cap4b")"
+
 # Case 5 — empty result `[]` is SUCCESS (exit 0), not a failure.
 cat > "$SB/bin/gh" <<'EOF'
 #!/bin/bash
@@ -230,6 +236,37 @@ EOF
   IFS=$'\t' read -r s_len s_ref < "$SB2/result2"
   assert_eq "tracker_list glab since → client-side filter keeps 1" "1"  "$s_len"
   assert_eq "tracker_list glab since → kept the recent item"       "45" "$s_ref"
+
+  # Case 9c: an item MISSING updated_at must be KEPT by the client-side `since`
+  # filter (recency unknowable → surface it, don't silently drop). Mock returns
+  # one recent, one old, one with a null updated_at.
+  cat > "$SB2/bin/glab" <<'EOF'
+#!/bin/bash
+if [ "$1" = "issue" ] && [ "$2" = "list" ]; then
+  cat <<'JSON'
+[
+  {"iid":45,"title":"recent","web_url":"https://gitlab.com/g/p/-/issues/45","labels":[],"state":"opened","updated_at":"2026-07-02T08:00:00Z"},
+  {"iid":9,"title":"old","web_url":"https://gitlab.com/g/p/-/issues/9","labels":[],"state":"opened","updated_at":"2026-05-01T08:00:00Z"},
+  {"iid":3,"title":"undated","web_url":"https://gitlab.com/g/p/-/issues/3","labels":[],"state":"opened","updated_at":null}
+]
+JSON
+fi
+EOF
+  chmod +x "$SB2/bin/glab"
+  (
+    cd "$SB2" || exit 1
+    # shellcheck source=/dev/null
+    . "$SB2/.claude/hooks/_lib-tracker.sh"
+    tracker_clear_cache
+    out=$(PATH="$SB2/bin:$PATH" tracker_list "g/p" since=2026-06-01)
+    # Expect the recent (45) AND the undated (3) kept; the old (9) dropped.
+    len=$(printf '%s' "$out" | jq -r 'length')
+    refs=$(printf '%s' "$out" | jq -r '[.[].ref] | sort | join(",")')
+    printf '%s\t%s\n' "$len" "$refs"
+  ) > "$SB2/result3"
+  IFS=$'\t' read -r u_len u_refs < "$SB2/result3"
+  assert_eq "tracker_list glab since → keeps recent + undated, drops old (count)" "2"    "$u_len"
+  assert_eq "tracker_list glab since → undated item (3) NOT dropped"              "3,45" "$u_refs"
   rm -rf "$SB2"
 else
   echo "SKIP: tracker_list glab per-project cases (no yq / python3+PyYAML)"
