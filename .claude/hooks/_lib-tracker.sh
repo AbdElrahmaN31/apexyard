@@ -624,11 +624,12 @@ tracker_create() {
 #   Color is accepted as a bare hex ("FBCA04", the gh convention); the glab
 #   adapter normalises it to "#FBCA04" (GitLab wants the leading #).
 #
-# Adapters: gh + glab do a real create. jira / linear / asana / custom / none
-#   are no-ops — tracker_create has no create adapter for them (the dispatch
-#   defaults to gh), so a label step for those trackers is out of scope. (GitLab
-#   additionally auto-creates a label when it is first applied on issue-create,
-#   so the glab path is a convenience, not a correctness requirement.)
+# Adapters: gh + glab do a real create. jira / linear / asana / none have no
+#   built-in gh/glab label CLI here, and `custom` files issues via the operator's
+#   own create_command (which handles labels its own way) — so all of them are
+#   no-ops; a generic label-ensure step doesn't apply. (GitLab additionally
+#   auto-creates a label when it is first applied on issue-create, so even the
+#   glab path is a convenience, not a correctness requirement.)
 # ------------------------------------------------------------------------------
 
 # Internal adapter: gh → `gh label create <name>` (name is positional).
