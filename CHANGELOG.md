@@ -2,6 +2,58 @@
 
 All notable changes to ApexYard are documented here.
 
+## [v4.3.0] — 2026-07-04
+
+Minor release — 2 features, 1 fix, 1 docs improvement. Headlined by the
+**trust-chain security trigger**: the adversarial Security Auditor now
+auto-fires on any change to the framework's own enforcement layer
+(`.claude/hooks/**` + `.claude/settings.json`), not just auth/crypto/secrets
+paths — closing the gap that let enforcement-layer bugs reach review with only
+a generalist code-review pass.
+
+**Tracker/forge scope note.** Issue *creation* is now tracker-agnostic across
+the remaining creator skills (gh/glab/custom). Merge-gate and review-*posting*
+enforcement remain GitHub-first — forge-aware review submission (#758 / #763)
+and merge-gating (#764) are in progress on the #711 epic and are **not** in this
+release. GitLab adopters can create tickets tracker-agnostically but should not
+yet rely on forge-aware merge gating.
+
+### Added (feat)
+
+- (#777) auto-invoke the Security Auditor on trust-chain changes — fac3547
+- (#709) route remaining creator skills + label helper through tracker abstraction — 6f515e3
+
+### Fixed (fix)
+
+- (#769) agdr-arch-pr hook — origin-first diff base + raw-command marker haystack — c342be8
+
+### Changed (refactor / chore / docs)
+
+- (#756) add star-history chart to README — b98bb28
+
+### Closes
+
+- Closes #709, #756, #769, #777
+
+## [v4.2.0] — 2026-06-28
+
+Minor release — 2 features, 3 fixes.
+
+### Added (feat)
+
+- (#741) wire design tooling into roles + add /design-sync skill — f324b59
+- (#740) offer an opt-in /challenge nudge from /decide — 4cd59a7
+
+### Fixed (fix)
+
+- (#737) anchor release-changelog range on the post-sync boundary — ee35238
+- (#744) anchor active-ticket repo resolution to FILE_PATH not CWD — 029c676
+- (#743) parse gh pr create structurally (body-file, multi-line, body-example) (AgDR-0081) — 620da46
+
+### Closes
+
+- Closes #737, #740, #741, #743, #744
+
 ## [v4.1.0] — 2026-06-27
 
 Minor release — 1 feature,3 fixes.
