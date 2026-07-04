@@ -171,6 +171,16 @@ PROJECT_NAME="${REL%%/*}"
 [ -n "$PROJECT_NAME" ] || exit 0
 [ "$PROJECT_NAME" = "$REL" ] && exit 0   # file sat directly in projects_dir, no project
 
+# ABS_FILE is not path-normalised, and the containment glob above matches '/',
+# so a file_path like "<projects_dir>/../docs/x.md" passes the guard textually
+# and yields PROJECT_NAME=".." — which would make the write target escape
+# projects/<name>/docs/ (me2resh/apexyard#768 security review). Every downstream
+# path (DOCS_DIR, INDEX_FILE, the find root) is rebuilt from PROJECT_NAME, so
+# rejecting a traversal/degenerate name here contains both the write and read.
+case "$PROJECT_NAME" in
+  ''|.|..|*/*) exit 0 ;;
+esac
+
 PROJECT_ROOT="$PROJECTS_DIR/$PROJECT_NAME"
 DOCS_DIR="$PROJECT_ROOT/docs"
 INDEX_FILE="$DOCS_DIR/$INDEX_NAME"

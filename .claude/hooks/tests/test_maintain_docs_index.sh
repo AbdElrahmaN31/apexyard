@@ -164,6 +164,20 @@ assert_eq       "index write → exit 0"     "0" "$RC"
 assert_contains "index write → left as-is" "$(cat "$SB/projects/alpha/docs/INDEX.md")" "existing index"
 
 # ---------------------------------------------------------------------------
+# Case 8 — path traversal on the write target (me2resh/apexyard#768 review).
+# A file_path with `../` immediately after projects/ must NOT let the hook
+# write an INDEX.md outside projects/<name>/docs/. Here the traversal target
+# is $SB/docs/INDEX.md (one level up, into the framework's own docs/), which
+# already exists so the [ -d "$DOCS_DIR" ] guard would otherwise pass.
+# ---------------------------------------------------------------------------
+SB=$(make_sandbox true)
+mkdir -p "$SB/docs" "$SB/projects/alpha/docs"          # $SB/docs = the escape target
+printf '# Framework Doc\n' > "$SB/docs/thing.md"
+run_hook "$SB" "$SB/projects/../docs/x.md"
+assert_eq         "traversal → exit 0"                 "0" "$RC"
+assert_not_exists "traversal → no escaped INDEX write" "$SB/docs/INDEX.md"
+
+# ---------------------------------------------------------------------------
 echo "=========================================="
 if [ "$FAIL" -eq 0 ]; then
   echo "PASS: $PASS  FAIL: 0"
