@@ -37,6 +37,13 @@
 # forges' merge shapes and resolves MR/PR state via the matching CLI:
 #
 #   3. `glab mr merge 42 -R owner/repo`                           → MR is 42
+#   4. `glab api projects/owner%2Frepo/merge_requests/42/merge`   → MR is 42
+#
+# Shape 4 (#767) is the GitLab raw-API merge — the exact forge analog of the #47
+# `gh api …/pulls/<N>/merge` bypass. Gating only `glab mr merge` (shape 3) while
+# leaving the API passthrough open would re-create #47 on GitLab, so both glab
+# shapes are recognised (matched with `Bash(glab api *)` in settings.json, the
+# same way the gh CLI shape is paired with `Bash(gh api *)`).
 #
 # The gh path is unchanged byte-for-byte; glab is additive. Forge selection for
 # the CLI-calling resolvers goes through `tracker_kind` from `_lib-tracker.sh`
@@ -79,6 +86,7 @@ _forge_from_command() {
 #   - `gh pr merge ...`
 #   - `gh api ... repos/<owner>/<repo>/pulls/<N>/merge ...`
 #   - `glab mr merge ...`                                     (#764, GitLab)
+#   - `glab api ... merge_requests/<N>/merge ...`             (#767, GitLab raw-API)
 is_merge_command() {
   local cmd="$1"
   if echo "$cmd" | grep -qE '\bgh\s+pr\s+merge\b'; then
@@ -91,6 +99,16 @@ is_merge_command() {
   fi
   # `glab mr merge ...` — GitLab merge-request merge (#764).
   if echo "$cmd" | grep -qE '\bglab\s+mr\s+merge\b'; then
+    return 0
+  fi
+  # `glab api` with a `/merge_requests/<N>/merge` path — GitLab's raw-API merge
+  # passthrough (#767, the forge analog of the #47 `gh api …/pulls/<N>/merge`
+  # bypass). The project is a URL-encoded path (`projects/<owner>%2F<repo>`); the
+  # MR iid + `/merge` action is what we match. The trailing `\b` is load-bearing:
+  # it stops `/merge_ref`, `/merge_requests/<N>` (GET), and `/notes` from
+  # false-matching — a false match here would be fail-CLOSED (block), but a
+  # false NEGATIVE is fail-open, so the anchor is verified by negative tests.
+  if echo "$cmd" | grep -qE '\bglab\s+api\b.*merge_requests/[0-9]+/merge\b'; then
     return 0
   fi
   return 1
@@ -123,6 +141,14 @@ extract_pr_number() {
   # 1. gh api path extraction — greps the /pulls/<N>/merge segment directly.
   #    The PR number lives in the URL path, so redirections cannot affect it.
   pr=$(echo "$cmd" | grep -oE 'repos/[^/[:space:]]+/[^/[:space:]]+/pulls/[0-9]+/merge' | grep -oE '/pulls/[0-9]+/' | grep -oE '[0-9]+' | head -1)
+
+  # 1b. glab api path extraction — the /merge_requests/<N>/merge segment (#767).
+  #     Same URL-path discipline as step 1: the MR iid lives in the path, so
+  #     redirections cannot affect it. The `/merge` suffix keeps this from
+  #     grabbing an iid out of a non-merge URL (e.g. `/merge_requests/42/notes`).
+  if [ -z "$pr" ]; then
+    pr=$(echo "$cmd" | grep -oE 'merge_requests/[0-9]+/merge' | grep -oE '[0-9]+' | head -1)
+  fi
 
   # 2. gh pr merge positional arg.
   if [ -z "$pr" ]; then
@@ -346,6 +372,8 @@ resolve_pr_head_branch() {
 #
 # Recognises:
 #   1. `gh api repos/<owner>/<repo>/pulls/<N>/merge ...`  — repo from URL path
+#   1b. `glab api projects/<owner>%2F<repo>/merge_requests/<N>/merge ...` — repo
+#       from the URL-encoded project path (#767)
 #   2. `gh pr merge ... --repo <owner>/<repo> ...`        — repo from --repo flag
 #   3. Falls back to `gh pr view --json headRepository`   — current branch's PR
 #
@@ -357,6 +385,20 @@ extract_repo_from_command() {
   # 1. gh api path extraction.
   repo=$(echo "$cmd" | grep -oE 'repos/[^/[:space:]]+/[^/[:space:]]+/pulls/[0-9]+/merge' \
     | sed -nE 's|repos/([^/]+/[^/]+)/pulls/.*|\1|p' | head -1)
+
+  # 1b. glab api path extraction (#767). GitLab's API takes the project as a
+  #     single URL-encoded path segment — `projects/<owner>%2F<repo>` (nested
+  #     subgroups become `<a>%2F<b>%2F<repo>`). There are no literal slashes in
+  #     the encoded segment, so [^/[:space:]]+ captures the whole project; then
+  #     decode %2F/%2f back to `/` so the result matches the owner/repo form the
+  #     markers and `glab mr view -R` expect.
+  if [ -z "$repo" ]; then
+    repo=$(echo "$cmd" | grep -oE 'projects/[^/[:space:]]+/merge_requests/[0-9]+/merge' \
+      | sed -nE 's|projects/([^/]+)/merge_requests/.*|\1|p' | head -1)
+    if [ -n "$repo" ]; then
+      repo=$(echo "$repo" | sed -e 's/%2[Ff]/\//g')
+    fi
+  fi
 
   # 2. Repo flag on the merge command: gh/glab `--repo` or the short `-R` alias
   #    (both gh and glab accept `-R`) (#764). Search ONLY within the merge-command

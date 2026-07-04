@@ -139,6 +139,37 @@ assert_true  merge_command_uses_variable 'glab mr merge $MR -R o/r'
 assert_true  merge_command_uses_variable 'glab mr merge 42 -R $REPO'
 assert_false merge_command_uses_variable 'glab mr merge 42 -R o/r --squash'
 
+# --- glab raw-API merge shape (#767) — the forge analog of the #47 `gh api`
+#     bypass. Gating only `glab mr merge` while leaving `glab api …/merge` open
+#     re-creates #47 on GitLab, so the raw-API shape must be detected + gated. ---
+# Positive: the canonical PUT-to-merge passthrough is recognised.
+assert_true  is_merge_command 'glab api projects/o%2Fr/merge_requests/42/merge -X PUT'
+# Positive: query-param form (the trailing \b matches before `?`).
+assert_true  is_merge_command 'glab api "projects/o%2Fr/merge_requests/42/merge?squash=true"'
+# NEGATIVE (fail-open is the danger, so prove the anchor rejects near-misses):
+#   - a GET on the MR (no /merge action) must NOT count as a merge
+assert_false is_merge_command 'glab api projects/o%2Fr/merge_requests/42'
+#   - a sibling sub-resource (/notes) must NOT count
+assert_false is_merge_command 'glab api projects/o%2Fr/merge_requests/42/notes'
+#   - `/merge_ref` — `merge` followed by `_` has no word boundary; the trailing
+#     \b in the detector is what makes this a non-match. This is THE case that
+#     justifies the anchor.
+assert_false is_merge_command 'glab api projects/o%2Fr/merge_requests/42/merge_ref'
+# extract_pr_number: the iid comes from the URL path (redirection-proof, like gh api).
+assert_eq "extract_pr_number glab api URL" "42" \
+  "$(extract_pr_number 'glab api projects/o%2Fr/merge_requests/42/merge -X PUT')"
+# extract_repo_from_command: the project path is URL-encoded; %2F must decode to /
+# so the repo matches the marker / `glab mr view -R` form. Use a value where the
+# decode is observable (not a bare o/r).
+assert_eq "extract_repo glab api %2F decode" "mygroup/myrepo" \
+  "$(extract_repo_from_command 'glab api projects/mygroup%2Fmyrepo/merge_requests/42/merge -X PUT')"
+# Lowercase %2f is equally valid URL-encoding — the decode covers both cases.
+assert_eq "extract_repo glab api %2f (lowercase) decode" "mygroup/myrepo" \
+  "$(extract_repo_from_command 'glab api projects/mygroup%2fmyrepo/merge_requests/42/merge -X PUT')"
+# Nested subgroup: two %2F separators decode to a two-slash project path.
+assert_eq "extract_repo glab api nested subgroup" "grp/sub/repo" \
+  "$(extract_repo_from_command 'glab api projects/grp%2Fsub%2Frepo/merge_requests/42/merge -X PUT')"
+
 # ---------------------------------------------------------------------------
 # Regression sandbox: kind=gh — the resolvers must take the UNCHANGED gh path.
 SB_GH=$(make_sandbox gh)
@@ -155,6 +186,11 @@ assert_eq "resolve_pr_head_branch gh path unchanged (regression)" "main" \
 assert_true  is_merge_command "gh pr merge 7 --repo o/r --squash"
 assert_eq "extract_pr_number gh positional (regression)" "7" "$(extract_pr_number 'gh pr merge 7 --repo o/r --squash')"
 assert_true  merge_command_uses_variable 'gh pr merge $PR --repo o/r'
+# gh raw-API merge shape (the #47 shape) still recognised + parsed — proves the
+# glab-api addition sits alongside the gh-api branch, not in place of it.
+assert_true  is_merge_command 'gh api repos/o/r/pulls/7/merge -X PUT'
+assert_eq "extract_pr_number gh api URL (regression)" "7" "$(extract_pr_number 'gh api repos/o/r/pulls/7/merge -X PUT')"
+assert_eq "extract_repo gh api URL (regression)" "o/r" "$(extract_repo_from_command 'gh api repos/o/r/pulls/7/merge -X PUT')"
 
 # ---------------------------------------------------------------------------
 echo
