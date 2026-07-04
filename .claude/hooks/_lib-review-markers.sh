@@ -117,8 +117,9 @@ review_marker_path() {
 #
 # Args:
 #   pr        — the PR/MR number.
-#   hint_repo — optional "owner/repo": scopes the gh query with --repo AND is the
-#               fallback when URL parsing yields nothing.
+#   hint_repo — optional "owner/repo": the VALUE fallback when the URL can't be
+#               parsed or gh is unavailable. It is NEVER used to scope the gh
+#               query — see the WHY-UNSCOPED note in the body below.
 #
 # Output (stdout): "owner/repo", or the hint (or empty) when unresolved.
 pr_base_repo() {
@@ -127,11 +128,14 @@ pr_base_repo() {
     [ -n "$hint" ] && printf '%s' "$hint"
     return 0
   fi
-  if [ -n "$hint" ]; then
-    url=$(gh pr view "$pr" --repo "$hint" --json url --jq '.url' 2>/dev/null)
-  else
-    url=$(gh pr view "$pr" --json url --jq '.url' 2>/dev/null)
-  fi
+  # WHY UNSCOPED (me2resh/apexyard#770 review): query with NO --repo. gh's ambient
+  # base-repo resolution (from the working copy's remotes) prefers the parent /
+  # upstream — i.e. the BASE repo — which is exactly the key we want. Scoping with
+  # `--repo "$hint"` (the head/fork) would look up the base-numbered PR on the fork,
+  # where it does not exist → gh errors → empty url → the hint (fork) fallback fires
+  # → the #765 divergence is re-created on the very cross-fork path this helper
+  # exists to fix. So the hint is a VALUE fallback only, never a query scope.
+  url=$(gh pr view "$pr" --json url --jq '.url' 2>/dev/null)
   base=$(printf '%s' "$url" | sed -E 's#^https?://[^/]+/(.+)/(pull|-/merge_requests)/[0-9].*#\1#')
   if [ -n "$base" ] && [ "$base" != "$url" ]; then
     printf '%s' "$base"

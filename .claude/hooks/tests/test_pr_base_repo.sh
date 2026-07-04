@@ -8,6 +8,13 @@
 #
 # gh is mocked via a file-driven stub (no env-export subtleties): the stub prints
 # the contents of $MOCKBIN/url, or exits non-zero when that file is empty.
+#
+# The stub is --repo-AWARE (me2resh/apexyard#770 review): a `gh pr view --repo <r>`
+# call only resolves when <r> is the BASE repo in the queued URL; scoping to any
+# other repo (e.g. the fork on a cross-fork PR) fails exactly like real gh rejecting
+# a base-numbered PR looked up on the fork. This makes the cross-fork case below
+# LOAD-BEARING: it fails if pr_base_repo ever re-introduces `--repo "$hint"` scoping
+# (the query MUST be unscoped) and passes only when the base is genuinely resolved.
 
 set -u
 
@@ -25,9 +32,22 @@ assert_eq() { # <label> <want> <got>
 MOCKBIN=$(mktemp -d)
 cat > "$MOCKBIN/gh" <<EOF
 #!/bin/bash
-# mock gh: emit the queued URL, or fail when none is queued.
+# mock gh (--repo-aware): emit the queued URL only when the query would resolve —
+# i.e. UNSCOPED (ambient base resolution) OR --repo naming the base repo in the
+# queued URL. A --repo pointing anywhere else (the fork) fails, like real gh
+# rejecting a base-numbered PR looked up on the fork. Empty queue → fail.
 [ -s "$MOCKBIN/url" ] || exit 1
-cat "$MOCKBIN/url"
+url="\$(cat "$MOCKBIN/url")"
+base="\$(printf '%s' "\$url" | sed -E 's#^https?://[^/]+/(.+)/(pull|-/merge_requests)/[0-9].*#\1#')"
+repo=""
+while [ \$# -gt 0 ]; do
+  case "\$1" in
+    --repo) repo="\$2"; shift 2 ;;
+    *) shift ;;
+  esac
+done
+if [ -n "\$repo" ] && [ "\$repo" != "\$base" ]; then exit 1; fi
+printf '%s' "\$url"
 EOF
 chmod +x "$MOCKBIN/gh"
 export PATH="$MOCKBIN:$PATH"
