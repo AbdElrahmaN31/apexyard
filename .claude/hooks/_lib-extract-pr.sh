@@ -27,11 +27,66 @@
 #   . "$(dirname "$0")/_lib-extract-pr.sh"
 #   if ! is_merge_command "$COMMAND"; then exit 0; fi
 #   PR_NUMBER=$(extract_pr_number "$COMMAND")
+#
+# FORGE-AWARENESS (#764)
+# ----------------------
+# The gates originally spoke only GitHub. A GitLab-forge project (`tracker.kind:
+# glab`) merges via `glab mr merge <iid>` — a shape neither the matcher nor this
+# helper recognised, so the gates silently did not fire (an ungated-merge hole,
+# the forge analog of the #47 `gh api` bypass). This helper now recognises both
+# forges' merge shapes and resolves MR/PR state via the matching CLI:
+#
+#   3. `glab mr merge 42 -R owner/repo`                           → MR is 42
+#   4. `glab api projects/owner%2Frepo/merge_requests/42/merge`   → MR is 42
+#
+# Shape 4 (#767) is the GitLab raw-API merge — the exact forge analog of the #47
+# `gh api …/pulls/<N>/merge` bypass. Gating only `glab mr merge` (shape 3) while
+# leaving the API passthrough open would re-create #47 on GitLab, so both glab
+# shapes are recognised (matched with `Bash(glab api *)` in settings.json, the
+# same way the gh CLI shape is paired with `Bash(gh api *)`).
+#
+# The gh path is unchanged byte-for-byte; glab is additive. Forge selection for
+# the CLI-calling resolvers goes through `tracker_kind` from `_lib-tracker.sh`
+# (gh + glab coincide with github + gitlab per #762); the shape detectors read
+# the command text directly.
+
+# Lazily source the tracker lib so `tracker_kind` is available for forge
+# resolution. Guarded: only source if not already defined and the lib is
+# present. tracker_kind defaults to "gh" with no config, preserving gh behaviour.
+if ! command -v tracker_kind >/dev/null 2>&1; then
+  _lib_extract_pr_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd 2>/dev/null)"
+  if [ -n "$_lib_extract_pr_dir" ] && [ -f "$_lib_extract_pr_dir/_lib-tracker.sh" ]; then
+    # shellcheck source=/dev/null
+    . "$_lib_extract_pr_dir/_lib-tracker.sh"
+  fi
+fi
+
+# Echoes the forge kind ('gh' | 'glab') for a repo, via tracker_kind. Any
+# non-glab kind (gh / none / jira / linear / unknown / unresolved) → 'gh', so
+# the GitHub CLI path stays the default. Used by the CLI-calling resolvers
+# (resolve_pr_head, resolve_pr_head_branch) which only have the repo, not the
+# command text.
+_forge_kind_for() {
+  local repo="${1:-}" kind="gh"
+  if command -v tracker_kind >/dev/null 2>&1; then
+    kind=$(tracker_kind "$repo" 2>/dev/null || echo gh)
+  fi
+  case "$kind" in glab) echo glab ;; *) echo gh ;; esac
+}
+
+# Echoes 'glab' if the command text is a GitLab (glab) invocation, else 'gh'.
+# Shape-based — used where the command string is in hand (the extractors), so
+# no config lookup is needed: the command literally says which CLI it drives.
+_forge_from_command() {
+  if echo "${1:-}" | grep -qE '\bglab\s+(mr|api)\b'; then echo glab; else echo gh; fi
+}
 
 # Returns 0 if $1 looks like a merge command this gate should fire on.
-# Matches EITHER:
+# Matches ANY of:
 #   - `gh pr merge ...`
 #   - `gh api ... repos/<owner>/<repo>/pulls/<N>/merge ...`
+#   - `glab mr merge ...`                                     (#764, GitLab)
+#   - `glab api ... merge_requests/<N>/merge ...`             (#767, GitLab raw-API)
 is_merge_command() {
   local cmd="$1"
   if echo "$cmd" | grep -qE '\bgh\s+pr\s+merge\b'; then
@@ -40,6 +95,20 @@ is_merge_command() {
   # `gh api` with a `/pulls/<N>/merge` path anywhere in the command. The path
   # may be quoted, slash-separated, and may include query params.
   if echo "$cmd" | grep -qE '\bgh\s+api\b.*repos/[^/[:space:]]+/[^/[:space:]]+/pulls/[0-9]+/merge\b'; then
+    return 0
+  fi
+  # `glab mr merge ...` — GitLab merge-request merge (#764).
+  if echo "$cmd" | grep -qE '\bglab\s+mr\s+merge\b'; then
+    return 0
+  fi
+  # `glab api` with a `/merge_requests/<N>/merge` path — GitLab's raw-API merge
+  # passthrough (#767, the forge analog of the #47 `gh api …/pulls/<N>/merge`
+  # bypass). The project is a URL-encoded path (`projects/<owner>%2F<repo>`); the
+  # MR iid + `/merge` action is what we match. The trailing `\b` is load-bearing:
+  # it stops `/merge_ref`, `/merge_requests/<N>` (GET), and `/notes` from
+  # false-matching — a false match here would be fail-CLOSED (block), but a
+  # false NEGATIVE is fail-open, so the anchor is verified by negative tests.
+  if echo "$cmd" | grep -qE '\bglab\s+api\b.*merge_requests/[0-9]+/merge\b'; then
     return 0
   fi
   return 1
@@ -72,6 +141,14 @@ extract_pr_number() {
   # 1. gh api path extraction — greps the /pulls/<N>/merge segment directly.
   #    The PR number lives in the URL path, so redirections cannot affect it.
   pr=$(echo "$cmd" | grep -oE 'repos/[^/[:space:]]+/[^/[:space:]]+/pulls/[0-9]+/merge' | grep -oE '/pulls/[0-9]+/' | grep -oE '[0-9]+' | head -1)
+
+  # 1b. glab api path extraction — the /merge_requests/<N>/merge segment (#767).
+  #     Same URL-path discipline as step 1: the MR iid lives in the path, so
+  #     redirections cannot affect it. The `/merge` suffix keeps this from
+  #     grabbing an iid out of a non-merge URL (e.g. `/merge_requests/42/notes`).
+  if [ -z "$pr" ]; then
+    pr=$(echo "$cmd" | grep -oE 'merge_requests/[0-9]+/merge' | grep -oE '[0-9]+' | head -1)
+  fi
 
   # 2. gh pr merge positional arg.
   if [ -z "$pr" ]; then
@@ -119,9 +196,32 @@ extract_pr_number() {
     fi
   fi
 
-  # 3. Last resort: ask gh which PR the current branch points at.
+  # 2b. glab mr merge positional arg (#764, GitLab). Same span-fencing and
+  #     redirection-stripping discipline as the gh path above.
   if [ -z "$pr" ]; then
-    pr=$(gh pr view --json number --jq '.number' 2>/dev/null)
+    local gspan gclean gtoken
+    gspan=$(echo "$cmd" | grep -oE '\bglab\s+mr\s+merge\b[^|;&]*')
+    if [ -n "$gspan" ]; then
+      gclean=$(echo "$gspan" | sed \
+        -e 's/[0-9]*>&[0-9]*/  /g' \
+        -e 's/&>[^[:space:]]*/  /g' \
+        -e 's/>>[^[:space:]]*/  /g' \
+        -e 's/>[^[:space:]]*/  /g')
+      gtoken=$(echo "$gclean" | grep -oE '\bmerge\b[[:space:]]+[^[:space:]]*' | awk 'NR==1 {print $NF}')
+      if echo "$gtoken" | grep -qE '^[0-9]+$'; then
+        pr="$gtoken"
+      fi
+    fi
+  fi
+
+  # 3. Last resort: ask the forge which PR/MR the current branch points at.
+  #    Forge-aware (#764): a glab command falls back to `glab mr view`.
+  if [ -z "$pr" ]; then
+    if [ "$(_forge_from_command "$cmd")" = glab ]; then
+      pr=$(glab mr view --output json 2>/dev/null | jq -r '.iid // empty' 2>/dev/null)
+    else
+      pr=$(gh pr view --json number --jq '.number' 2>/dev/null)
+    fi
   fi
 
   echo "$pr"
@@ -152,7 +252,8 @@ merge_command_uses_variable() {
   # redirection-stripping discipline as extract_pr_number so `2>&1` etc. don't
   # masquerade as the positional arg).
   local span clean_span first_token
-  span=$(echo "$cmd" | grep -oE '\bgh\s+pr\s+merge\b[^|;&]*')
+  # Match either forge's merge span: `gh pr merge …` or `glab mr merge …` (#764).
+  span=$(echo "$cmd" | grep -oE '\b(gh\s+pr|glab\s+mr)\s+merge\b[^|;&]*')
   clean_span=$(echo "$span" | sed \
     -e 's/[0-9]*>&[0-9]*/  /g' \
     -e 's/&>[^[:space:]]*/  /g' \
@@ -166,9 +267,12 @@ merge_command_uses_variable() {
     return 0
   fi
 
-  # --repo value (same quoted-or-bare variable forms).
+  # repo value (same quoted-or-bare variable forms). Covers `--repo` and the
+  # short `-R` alias (#764). Searched within clean_span (the fenced merge span),
+  # not the whole command, so a trailing unrelated `-R` in a compound command
+  # can't be picked up.
   local repo_token
-  repo_token=$(echo "$cmd" | sed -nE 's/.*--repo[[:space:]]+([^[:space:]]+).*/\1/p' | head -1)
+  repo_token=$(echo "$clean_span" | sed -nE 's/.*(--repo|-R)[[:space:]]+([^[:space:]]+).*/\2/p' | head -1)
   if echo "$repo_token" | grep -qE '^["'"'"']?\$\{?[A-Za-z_]'; then
     return 0
   fi
@@ -210,13 +314,53 @@ resolve_pr_head() {
     return
   fi
 
-  if [ -n "$cmd_repo" ]; then
+  # Forge-aware (#764): glab projects resolve the MR HEAD SHA via `glab mr view`.
+  # glab's MR JSON exposes the head commit as `.sha` (fallback `.diff_refs.head_sha`
+  # on older glab). Any non-glab forge → the unchanged gh path.
+  if [ "$(_forge_kind_for "$cmd_repo")" = glab ]; then
+    if [ -n "$cmd_repo" ]; then
+      sha=$(glab mr view "$pr_number" -R "$cmd_repo" --output json 2>/dev/null | jq -r '.sha // .diff_refs.head_sha // empty' 2>/dev/null)
+    else
+      sha=$(glab mr view "$pr_number" --output json 2>/dev/null | jq -r '.sha // .diff_refs.head_sha // empty' 2>/dev/null)
+    fi
+  elif [ -n "$cmd_repo" ]; then
     sha=$(gh pr view "$pr_number" --repo "$cmd_repo" --json headRefOid --jq '.headRefOid' 2>/dev/null)
   else
     sha=$(gh pr view "$pr_number" --json headRefOid --jq '.headRefOid' 2>/dev/null)
   fi
 
   echo "$sha"
+}
+
+# Echoes the PR/MR's HEAD (source) branch name, or empty on failure.
+#
+# Extracted (#764) from block-unreviewed-merge.sh's inline `gh pr view
+# --json headRefName` so the sync-PR `--squash` guard is forge-aware. On glab
+# the source branch is `.source_branch`; on gh it is `.headRefName`. Same
+# repo-optional shape and silent-empty-on-failure contract as resolve_pr_head.
+resolve_pr_head_branch() {
+  local pr_number="$1"
+  local cmd_repo="$2"
+  local branch=""
+
+  if [ -z "$pr_number" ]; then
+    echo ""
+    return
+  fi
+
+  if [ "$(_forge_kind_for "$cmd_repo")" = glab ]; then
+    if [ -n "$cmd_repo" ]; then
+      branch=$(glab mr view "$pr_number" -R "$cmd_repo" --output json 2>/dev/null | jq -r '.source_branch // empty' 2>/dev/null)
+    else
+      branch=$(glab mr view "$pr_number" --output json 2>/dev/null | jq -r '.source_branch // empty' 2>/dev/null)
+    fi
+  elif [ -n "$cmd_repo" ]; then
+    branch=$(gh pr view "$pr_number" --repo "$cmd_repo" --json headRefName -q '.headRefName' 2>/dev/null)
+  else
+    branch=$(gh pr view "$pr_number" --json headRefName -q '.headRefName' 2>/dev/null)
+  fi
+
+  echo "$branch"
 }
 
 # Echoes the owner/repo extracted from the merge command, or empty if not found.
@@ -228,6 +372,8 @@ resolve_pr_head() {
 #
 # Recognises:
 #   1. `gh api repos/<owner>/<repo>/pulls/<N>/merge ...`  — repo from URL path
+#   1b. `glab api projects/<owner>%2F<repo>/merge_requests/<N>/merge ...` — repo
+#       from the URL-encoded project path (#767)
 #   2. `gh pr merge ... --repo <owner>/<repo> ...`        — repo from --repo flag
 #   3. Falls back to `gh pr view --json headRepository`   — current branch's PR
 #
@@ -240,14 +386,39 @@ extract_repo_from_command() {
   repo=$(echo "$cmd" | grep -oE 'repos/[^/[:space:]]+/[^/[:space:]]+/pulls/[0-9]+/merge' \
     | sed -nE 's|repos/([^/]+/[^/]+)/pulls/.*|\1|p' | head -1)
 
-  # 2. --repo flag on gh pr merge.
+  # 1b. glab api path extraction (#767). GitLab's API takes the project as a
+  #     single URL-encoded path segment — `projects/<owner>%2F<repo>` (nested
+  #     subgroups become `<a>%2F<b>%2F<repo>`). There are no literal slashes in
+  #     the encoded segment, so [^/[:space:]]+ captures the whole project; then
+  #     decode %2F/%2f back to `/` so the result matches the owner/repo form the
+  #     markers and `glab mr view -R` expect.
   if [ -z "$repo" ]; then
-    repo=$(echo "$cmd" | sed -nE 's/.*--repo[[:space:]]+([^[:space:]]+).*/\1/p' | head -1)
+    repo=$(echo "$cmd" | grep -oE 'projects/[^/[:space:]]+/merge_requests/[0-9]+/merge' \
+      | sed -nE 's|projects/([^/]+)/merge_requests/.*|\1|p' | head -1)
+    if [ -n "$repo" ]; then
+      repo=$(echo "$repo" | sed -e 's/%2[Ff]/\//g')
+    fi
   fi
 
-  # 3. Last resort: ask gh which repo the current branch's PR belongs to.
+  # 2. Repo flag on the merge command: gh/glab `--repo` or the short `-R` alias
+  #    (both gh and glab accept `-R`) (#764). Search ONLY within the merge-command
+  #    span (fenced at the first shell separator, like extract_pr_number) so a
+  #    trailing unrelated `-R` in a compound command — e.g. `... && grep -R foo` —
+  #    cannot be mistaken for the merge target's repo.
   if [ -z "$repo" ]; then
-    repo=$(gh pr view --json headRepository --jq '.headRepository.nameWithOwner' 2>/dev/null)
+    local mspan
+    mspan=$(echo "$cmd" | grep -oE '\b(gh\s+pr|glab\s+mr)\s+merge\b[^|;&]*')
+    repo=$(echo "$mspan" | sed -nE 's/.*(--repo|-R)[[:space:]]+([^[:space:]]+).*/\2/p' | head -1)
+  fi
+
+  # 3. Last resort: ask the forge which repo the current branch's PR/MR belongs
+  #    to. Forge-aware (#764): a glab command falls back to `glab repo view`.
+  if [ -z "$repo" ]; then
+    if [ "$(_forge_from_command "$cmd")" = glab ]; then
+      repo=$(glab repo view --output json 2>/dev/null | jq -r '.full_name // empty' 2>/dev/null)
+    else
+      repo=$(gh pr view --json headRepository --jq '.headRepository.nameWithOwner' 2>/dev/null)
+    fi
   fi
 
   echo "$repo"

@@ -97,19 +97,13 @@ fi
 #   - `gh api .../pulls/<N>/merge -f merge_method=squash` (or rebase)
 # The `gh api` shape is the silent-bypass route that motivated #47, so the
 # guard must match `merge_method=squash|rebase` as well as the `--squash`
-# flag. (We make our own `gh pr view --json headRefName` call here — it is a
-# separate API call from the HEAD-SHA lookup further down, not the same one.)
+# flag. The head-branch lookup is delegated to resolve_pr_head_branch (#764) so
+# it is forge-aware (gh `.headRefName` / glab `.source_branch`) — a separate API
+# call from the HEAD-SHA lookup further down, not the same one.
 # On network failure we skip the guard and let the merge proceed — an
-# unavailable gh API is not a reason to permanently block all syncs.
+# unavailable forge API is not a reason to permanently block all syncs.
 if echo "$COMMAND" | grep -qE '(--squash|--rebase|merge_method=squash|merge_method=rebase)'; then
-  _SYNC_BRANCH=""
-  if [ -n "$CMD_REPO" ]; then
-    _SYNC_BRANCH=$(gh pr view "$PR_NUMBER" --repo "$CMD_REPO" \
-      --json headRefName -q '.headRefName' 2>/dev/null)
-  else
-    _SYNC_BRANCH=$(gh pr view "$PR_NUMBER" \
-      --json headRefName -q '.headRefName' 2>/dev/null)
-  fi
+  _SYNC_BRANCH=$(resolve_pr_head_branch "$PR_NUMBER" "$CMD_REPO")
   if echo "$_SYNC_BRANCH" | grep -qE '^sync/main-to-dev-after-'; then
     cat >&2 <<MSG
 BLOCKED: Sync PR #${PR_NUMBER} (branch: ${_SYNC_BRANCH}) cannot be squash-merged.
