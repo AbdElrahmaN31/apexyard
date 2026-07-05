@@ -42,7 +42,7 @@ See [`.claude/rules/role-triggers.md`](../../rules/role-triggers.md) for the ful
 4. Check for the required Glossary section
 5. Check for AgDR links if technical decisions were made
 6. On JS/TS diffs, run the Fallow static-analysis pass (§ 9 of the agent) — changed-scope, fail-soft, advisory; render a `### Fallow Findings` table + dry-run fix preview
-7. Submit a GitHub review via `gh pr review`
+7. Submit the review through the tracker-agnostic `tracker_review_submit` (gh PR / glab MR / custom host — #758), not a hardcoded `gh pr review`
 
 ## Review Checklist
 

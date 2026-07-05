@@ -23,6 +23,14 @@
 #                                      key entirely (consumers read it as `.body // empty`) until one
 #                                      needs it (jira `.description` is ADF, not a grep-able string;
 #                                      linear/asana bodies have no consumer yet).
+#   tracker_create <owner/repo> <title> [<body_file>] [<labels_csv>]
+#                                      creates a ticket via the per-project CLI; emits {ref,url}.
+#   tracker_review_submit <owner/repo> <pr> <verdict> [<body_file>]  (#758)
+#                                      submits a PR/MR review to the git host. verdict is one of
+#                                      approve|comment|request-changes (default comment). gh + glab
+#                                      adapters built in, `custom` review_command template, `none`
+#                                      no-op (returns 3, echoes body). Exit 0 = submitted; non-zero
+#                                      = CLI errored; 3 = shape-only (kind=none, nothing to call).
 #
 # Per-project resolution (#670 / AgDR-0072): tracker_kind / tracker_id_pattern /
 # tracker_view take an OPTIONAL owner/repo. When supplied, a `tracker:` block on
@@ -728,6 +736,159 @@ tracker_label_ensure() {
     *)    : ;;  # jira / linear / asana / custom / none — no-op
   esac
   return 0
+}
+
+# ------------------------------------------------------------------------------
+# PR/MR review submission (#758) — tracker/git-host-agnostic review posting.
+#
+# Mirrors tracker_create's shape: kind-dispatched adapters for gh + glab, a
+# `custom` review_command template, and a `none` no-op. The code-reviewer agent
+# (Rex) / /code-review call tracker_review_submit instead of shelling out to
+# `gh pr review` directly, so a GitLab-hosted adopter's review lands on the MR
+# rather than silently assuming GitHub.
+#
+# ORTHOGONAL to the merge gate. This function only posts the HUMAN-VISIBLE review
+# to the git host. The load-bearing `*-rex.approved` marker is a plain local file
+# (already tracker-agnostic) written separately by the agent — a failed submit
+# here does NOT touch it. See .claude/agents/code-reviewer.md § "Approval marker".
+#
+# Verdict vocabulary (faithful to gh's three verbs): approve | comment |
+# request-changes. This is a thin wrapper — the POLICY of "prefer --comment over
+# --approve on single-account self-review" lives in the agent (which passes
+# `comment`), not here.
+# ------------------------------------------------------------------------------
+
+# Internal adapter: gh → `gh pr review`. Args passed as an array (never an eval'd
+# string) so a body full of shell metacharacters is inert. 2>/dev/null hides the
+# expected self-approval refusal noise; gh's exit status still propagates.
+_tracker_review_gh() {
+  local repo="$1" pr="$2" verdict="$3" body_file="$4"
+  local -a args
+  args=(pr review "$pr" --repo "$repo")
+  case "$verdict" in
+    approve)         args+=(--approve) ;;
+    request-changes) args+=(--request-changes) ;;
+    comment|*)       args+=(--comment) ;;
+  esac
+  if [ -n "$body_file" ] && [ -f "$body_file" ]; then
+    args+=(--body-file "$body_file")
+  fi
+  gh "${args[@]}" 2>/dev/null
+}
+
+# Internal adapter: glab (GitLab) → `glab mr approve` / `glab mr note create`.
+#
+# GitLab has NO "request-changes" review state, so that verdict posts the review
+# body as an MR note (the verdict is stated in the body — same shape as gh's
+# --comment happy path). `approve` posts the approval and, when a body is given,
+# adds it as a note too (glab mr approve carries no message). `glab mr note
+# create` is the non-deprecated replacement for the old top-level `glab mr note
+# -m` (GitLab prints a deprecation notice steering to `create`); it is flagged
+# EXPERIMENTAL in glab 1.103.x — verified by CLI surface, not a live MR.
+_tracker_review_glab() {
+  local repo="$1" pr="$2" verdict="$3" body_file="$4"
+  local body=""
+  [ -n "$body_file" ] && [ -f "$body_file" ] && body="$(cat "$body_file")"
+  case "$verdict" in
+    approve)
+      glab mr approve "$pr" -R "$repo" 2>/dev/null || return 1
+      if [ -n "$body" ]; then
+        glab mr note create "$pr" -R "$repo" -m "$body" 2>/dev/null || return 1
+      fi
+      ;;
+    comment|request-changes|*)
+      [ -n "$body" ] || return 1   # a comment/notes verdict needs a body
+      glab mr note create "$pr" -R "$repo" -m "$body" 2>/dev/null || return 1
+      ;;
+  esac
+}
+
+# Internal: resolve the review_command template for the `custom` kind — the
+# per-project override (registry) wins over a global .tracker.review_command.
+# Empty when neither is set (custom kind without a template can't submit).
+_tracker_review_template() {
+  local repo="${1:-}"
+  if [ -n "$repo" ]; then
+    local pv
+    if pv=$(_tracker_project_value "$repo" review_command) && [ -n "$pv" ]; then
+      echo "$pv"
+      return 0
+    fi
+  fi
+  _tracker_load_config_lib
+  local tpl
+  tpl=$(config_get_or '.tracker.review_command' '' 2>/dev/null)
+  if [ -n "$tpl" ] && [ "$tpl" != "null" ]; then
+    echo "$tpl"
+  fi
+}
+
+# Internal adapter: custom → operator-supplied review_command template.
+#
+# Injection model (identical to _tracker_create_custom): only the SAFE
+# placeholders — {owner_repo} (registry slug), {pr} (numeric), {verdict}
+# (validated enum) — are substituted into the eval'd template. The one arbitrary,
+# untrusted value (the review body) is exposed as an ENVIRONMENT VARIABLE
+# ($TRACKER_REVIEW_BODY_FILE, a path) that the operator references with a
+# double-quoted expansion — so a body full of `; rm -rf …` is inert.
+_tracker_review_custom() {
+  local repo="$1" pr="$2" verdict="$3" body_file="$4"
+  local tpl
+  tpl=$(_tracker_review_template "$repo")
+  if [ -z "$tpl" ]; then
+    return 1
+  fi
+  local cmd="$tpl"
+  cmd="${cmd//\{owner_repo\}/$repo}"
+  cmd="${cmd//\{pr\}/$pr}"
+  cmd="${cmd//\{verdict\}/$verdict}"
+  TRACKER_REPO="$repo" TRACKER_PR="$pr" TRACKER_VERDICT="$verdict" \
+    TRACKER_REVIEW_BODY_FILE="$body_file" \
+    eval "$cmd" 2>/dev/null
+}
+
+# Public: tracker_review_submit <owner/repo> <pr> <verdict> [<body_file>]
+#
+# NOTE on the tracker.kind axis: kind describes the ISSUE tracker, but a review
+# targets the PR/MR HOST (the git remote). For gh+github and glab+gitlab they
+# coincide, which is exactly the pair this ticket (#758) covers. The wildcard
+# default below assumes a non-gh/glab issue tracker (jira/linear/asana) is paired
+# with a GitHub code host — correct for the common jira-issues+github-code setup,
+# but a jira-issues+gitlab-code adopter would need `tracker.kind=custom` with a
+# review_command (or a future dedicated review-host config).
+tracker_review_submit() {
+  local repo="$1" pr="$2" verdict="${3:-comment}" body_file="${4:-}"
+  if [ -z "$repo" ] || [ -z "$pr" ]; then
+    return 1
+  fi
+  # {pr} is documented numeric and is substituted into the custom adapter's
+  # eval'd template — reject a non-numeric value as defense-in-depth (gh/glab
+  # require numeric PR/MR ids anyway).
+  case "$pr" in
+    ''|*[!0-9]*) return 1 ;;
+  esac
+  case "$verdict" in
+    approve|comment|request-changes) ;;
+    *) verdict="comment" ;;   # normalise anything unexpected to the safe default
+  esac
+
+  local kind
+  kind=$(tracker_kind "$repo")
+  case "$kind" in
+    none)
+      # Shape-only mode: no git-host CLI to call. Emit the review body (if given)
+      # so the operator can post it manually, and return 3 (documented
+      # "shape-only" code) so callers don't misreport it as a CLI/auth error.
+      if [ -n "$body_file" ] && [ -f "$body_file" ]; then
+        cat "$body_file"
+      fi
+      return 3
+      ;;
+    gh)     _tracker_review_gh     "$repo" "$pr" "$verdict" "$body_file" ;;
+    glab)   _tracker_review_glab   "$repo" "$pr" "$verdict" "$body_file" ;;
+    custom) _tracker_review_custom "$repo" "$pr" "$verdict" "$body_file" ;;
+    *)      _tracker_review_gh     "$repo" "$pr" "$verdict" "$body_file" ;;  # see NOTE above
+  esac
 }
 
 # ------------------------------------------------------------------------------
