@@ -148,18 +148,32 @@ When MCP `search_docs` is available, you MAY supplement path-convention discover
 Resolve `$MARKER_HOME` and the PR's repo **once** here, then post. The sign-off marker below **reuses** these variables — do not re-resolve them (a second resolution risks diverging from the repo the marker is keyed on). Resolve at review start, before any `cd` / `gh pr checkout`.
 
 ```bash
-# 1. Ops fork root (walk up from the repo toplevel; `.apexyard-fork` first, then
-# the onboarding + registry pair). Inside workspace/<project>/, git toplevel is
-# the project clone — the walk-up finds the ops fork above it.
-REPO_ROOT=$(git rev-parse --show-toplevel)
+# 1. Ops fork root — resolve PIN-FIRST, the SAME strategy the merge gate and the
+# other reviewer agents (code-reviewer.md, security-reviewer.md) use. The session
+# pin points at the real ops fork even from inside a workspace/<project>/ clone;
+# a plain walk-up resolves to the private portfolio sibling in split-portfolio
+# mode (me2resh/apexyard#559). Fall back to walk-up only when no valid pin exists.
 OPS_ROOT=""
-r="$REPO_ROOT"
-while [ -n "$r" ] && [ "$r" != "/" ]; do
-  if [ -f "$r/.apexyard-fork" ]; then OPS_ROOT="$r"; break; fi
-  if [ -f "$r/onboarding.yaml" ] && [ -f "$r/apexyard.projects.yaml" ]; then OPS_ROOT="$r"; break; fi
-  r=$(dirname "$r")
-done
-MARKER_HOME="${OPS_ROOT:-$REPO_ROOT}"
+PIN_FILE="${APEXYARD_OPS_PIN_DIR:-$HOME/.claude/apexyard}/ops-root-${CLAUDE_CODE_SESSION_ID:-}"
+if [ -z "${APEXYARD_OPS_DISABLE_PIN:-}" ] && [ -n "${CLAUDE_CODE_SESSION_ID:-}" ] && [ -f "$PIN_FILE" ]; then
+  IFS= read -r OPS_ROOT < "$PIN_FILE" || OPS_ROOT=""
+fi
+# Validate the pin (self-heal a stale one): must satisfy a fork anchor.
+if [ -n "$OPS_ROOT" ] && [ ! -f "$OPS_ROOT/.apexyard-fork" ] && \
+   { [ ! -f "$OPS_ROOT/onboarding.yaml" ] || [ ! -f "$OPS_ROOT/apexyard.projects.yaml" ]; }; then
+  OPS_ROOT=""
+fi
+# Fallback: walk up from the repo root (pre-#381 behaviour, safety net).
+if [ -z "$OPS_ROOT" ]; then
+  r=$(git rev-parse --show-toplevel 2>/dev/null || pwd)
+  while [ -n "$r" ] && [ "$r" != "/" ]; do
+    if [ -f "$r/.apexyard-fork" ] || { [ -f "$r/onboarding.yaml" ] && [ -f "$r/apexyard.projects.yaml" ]; }; then
+      OPS_ROOT="$r"; break
+    fi
+    r=$(dirname "$r")
+  done
+fi
+MARKER_HOME="${OPS_ROOT:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
 # _lib-tracker.sh posts the human-visible review to the right host; the marker
 # helper is sourced too so the sign-off marker below can reuse $MARKER_HOME.
 # shellcheck source=/dev/null
@@ -172,26 +186,20 @@ MARKER_HOME="${OPS_ROOT:-$REPO_ROOT}"
 THREADED_REPO="{repo}"
 [ "$THREADED_REPO" = "{repo}" ] && THREADED_REPO=""
 
-# 2a. MARKER repo (keys the *-architecture.approved filename): threaded arg, else
-# headRepository. Unchanged from the pre-#763 behaviour — the cross-fork marker
-# alignment is tracked separately (see the note in the sign-off section below).
+# 2a. Resolve the PR's BASE (host) repo ONCE — the canonical key for BOTH the
+# review posting AND the sign-off marker (#765). $THREADED_REPO (when
+# /design-review passed it, #687) is the hint; otherwise headRepository. Then
+# pr_base_repo (in _lib-review-markers.sh) resolves the base from the PR URL
+# (gh pr view has no baseRepository field) and falls back to the hint when
+# base == head — so same-repo PRs are unchanged.
 if [ -n "$THREADED_REPO" ]; then
-  REPO="$THREADED_REPO"
+  HINT_REPO="$THREADED_REPO"
 else
-  REPO=$(gh pr view {number} --json headRepository --jq '.headRepository.nameWithOwner' 2>/dev/null)
+  HINT_REPO=$(gh pr view {number} --json headRepository --jq '.headRepository.nameWithOwner' 2>/dev/null)
 fi
-PR_REPO="$REPO"
-
-# 2b. HOST (base) repo for POSTING — the repo tracker_review_submit picks its
-# adapter from. When /design-review threaded a repo it IS the base repo; reuse it.
-# Only in the headRepository fallback (the fork, on a cross-fork PR) do we parse
-# the base from the PR URL (base-rooted; gh pr view has no baseRepository field).
-if [ -n "$THREADED_REPO" ]; then
-  PR_HOST_REPO="$THREADED_REPO"
-else
-  PR_HOST_REPO=$(gh pr view {number} --json url --jq '.url' 2>/dev/null | sed -E 's#^https?://[^/]+/(.+)/(pull|-/merge_requests)/[0-9].*#\1#')
-  [ -z "$PR_HOST_REPO" ] && PR_HOST_REPO="$REPO"
-fi
+PR_HOST_REPO=$(pr_base_repo {number} "$HINT_REPO")
+REPO="$PR_HOST_REPO"      # the --repo flag for gh pr view when writing the marker SHA
+PR_REPO="$PR_HOST_REPO"   # marker key = the base repo (matches the gate's lookup)
 
 # 3. Write the review to a temp body-file and submit through the abstraction.
 # A file (not inline text) is the uniform path: gh takes --body-file, glab reads
@@ -211,15 +219,15 @@ When your verdict is APPROVED, and ONLY then, write the architecture-review appr
 
 ### Path: ops fork root, not git toplevel
 
-The marker MUST land at `<ops_fork_root>/.claude/session/reviews/<owner>__<repo>__{number}-architecture.approved` (repo-qualified path, AgDR-0060 / #485). Inside `workspace/<project>/`, `git rev-parse --show-toplevel` returns the project clone — NOT the ops fork; that's why `$MARKER_HOME` and `$PR_REPO` are resolved ONCE in "Posting the review" above (before any `cd` / `gh pr checkout`). **Reuse them here** — do not re-resolve (a second resolution risks keying the marker on a different repo than the one the review was posted to):
+The marker MUST land at `<ops_fork_root>/.claude/session/reviews/<owner>__<repo>__{number}-architecture.approved` (repo-qualified path, AgDR-0060 / #485). Inside `workspace/<project>/`, `git rev-parse --show-toplevel` returns the project clone — NOT the ops fork; that's why `$MARKER_HOME` and `$PR_HOST_REPO` are resolved ONCE in "Posting the review" above (before any `cd` / `gh pr checkout`). **Reuse them here** — do not re-resolve (a second resolution risks keying the marker on a different repo than the one the review was posted to):
 
 ```bash
-# $MARKER_HOME, $PR_REPO, and $REPO all come from "Posting the review" above.
+# $MARKER_HOME and $PR_HOST_REPO come from "Posting the review" above.
 mkdir -p "$MARKER_HOME/.claude/session/reviews"
-ARCH_MARKER=$(review_marker_path "$PR_REPO" {number} architecture "$MARKER_HOME")
+ARCH_MARKER=$(review_marker_path "$PR_HOST_REPO" {number} architecture "$MARKER_HOME")
 ```
 
-> **Cross-fork note (tracked separately).** `$PR_REPO` keys the marker on the threaded repo, else `headRepository` (the fork). The gate `require-architecture-review.sh` keys its lookup on the merge command's **base** repo — so on a **cross-fork** PR the two can diverge (marker written under the fork qualifier; gate searches under the base). Aligning all marker writers to the base repo is a dedicated follow-up filed alongside #763. This PR only routes review *submission* through the tracker abstraction; marker keying is deliberately **unchanged** here.
+> **Cross-fork keying (#765).** `$PR_HOST_REPO` is the PR's **base** repo — exactly what `require-architecture-review.sh` keys its lookup on (the merge command's `--repo` / API-path, which on a cross-fork PR is always the base, since you cannot merge a fork's copy). Keying the marker on the base makes it findable by the gate on cross-fork PRs; same-repo PRs are unaffected (base == head). This replaces the earlier headRepository (fork) keying, which silently blocked cross-fork approvals.
 
 ### The command
 

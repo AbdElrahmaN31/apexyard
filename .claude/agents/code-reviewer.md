@@ -37,7 +37,7 @@ tracker_review_submit "$PR_HOST_REPO" {number} comment "$REVIEW_BODY_FILE"
 
 The verdict that drives the merge gate is the **local marker**, NOT the host's "Approved" review state. So:
 
-- **Canonical happy path:** call `tracker_review_submit "$PR_REPO" {number} comment "$REVIEW_BODY_FILE"` and state the verdict (`APPROVED` / `CHANGES REQUESTED`) in the body itself. This always works — on gh it maps to `gh pr review --comment`; on glab to an MR note; on custom to the operator's `review_command`.
+- **Canonical happy path:** call `tracker_review_submit "$PR_HOST_REPO" {number} comment "$REVIEW_BODY_FILE"` and state the verdict (`APPROVED` / `CHANGES REQUESTED`) in the body itself. This always works — on gh it maps to `gh pr review --comment`; on glab to an MR note; on custom to the operator's `review_command`.
 - **Do NOT pass the `approve` verdict by default.** On gh it maps to `gh pr review --approve`, which in the common single-account / auto-mode setup GitHub refuses ("Cannot approve your own PR"), and an auto-mode write-classifier may additionally flag it. **That block is expected and is not a failure** — a host "Approved" state is optional and unavailable when reviewing your own account's PR. Do not retry it, do not escalate it, and do not report the review as incomplete because of it. The local marker (output #1) is what satisfies the gate.
 - The `request-changes` verdict is fine for a non-approving result you want reflected in the host's review state (on gh it does not hit the self-approval restriction; on glab it posts a note, since GitLab has no request-changes state).
 
@@ -661,19 +661,25 @@ MARKER_HOME="${OPS_ROOT:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
 # shellcheck source=/dev/null
 . "$MARKER_HOME/.claude/hooks/_lib-tracker.sh"
 mkdir -p "$MARKER_HOME/.claude/session/reviews"
-# Resolve the head (fork) repo — used for the qualified marker filename.
+# Resolve the head (fork) repo — used ONLY as the hint/fallback for the base
+# resolver below. It is NO LONGER the marker key (that was the cross-fork bug —
+# see #765).
 PR_REPO=$(gh pr view {number} --json headRepository --jq '.headRepository.nameWithOwner' 2>/dev/null)
-REX_MARKER=$(review_marker_path "$PR_REPO" {number} rex "$MARKER_HOME")
 
-# Resolve the PR/MR HOST (base) repo — where the review must be POSTED and the
-# repo tracker_review_submit selects its adapter from. On a cross-fork PR this
-# differs from the fork above (posting to the fork fails: the PR lives on the
-# base). gh pr view has no baseRepository field, but the PR URL is ALWAYS on the
-# base repo — parse owner/repo from it (works for gh /pull/ and glab
-# /-/merge_requests/, incl. nested GitLab groups). Falls back to PR_REPO when
-# base == head (the common same-repo case).
-PR_HOST_REPO=$(gh pr view {number} --json url --jq '.url' 2>/dev/null | sed -E 's#^https?://[^/]+/(.+)/(pull|-/merge_requests)/[0-9].*#\1#')
-[ -z "$PR_HOST_REPO" ] && PR_HOST_REPO="$PR_REPO"
+# Resolve the PR/MR HOST (base) repo — the repo the PR lives on. It is BOTH where
+# the review must be POSTED (posting to the fork fails on a cross-fork PR: the PR
+# lives on the base) AND the canonical key for the approval marker. `pr_base_repo`
+# (in _lib-review-markers.sh) parses the PR URL — gh pr view has no baseRepository
+# field — and falls back to PR_REPO when base == head, so same-repo PRs are
+# unchanged.
+PR_HOST_REPO=$(pr_base_repo {number} "$PR_REPO")
+
+# Marker keyed on the BASE repo (#765) — this MATCHES what block-unreviewed-merge.sh
+# looks up: the gate keys on the merge command's --repo / API-path, which for a
+# cross-fork PR is always the base (you cannot merge a fork's copy). Keying the
+# marker on headRepository (the fork) was the divergence that blocked cross-fork
+# approvals.
+REX_MARKER=$(review_marker_path "$PR_HOST_REPO" {number} rex "$MARKER_HOME")
 
 # Write your review to a temp body-file, then submit it through the abstraction.
 # A file (not inline text) is the uniform path: gh takes --body-file, glab reads
@@ -690,7 +696,7 @@ tracker_review_submit "$PR_HOST_REPO" {number} comment "$REVIEW_BODY_FILE"; subm
 
 ### The command
 
-Once `MARKER_HOME`, `PR_REPO`, and `REX_MARKER` are resolved (see above), use exactly one of these forms:
+Once `MARKER_HOME`, `PR_HOST_REPO`, and `REX_MARKER` are resolved (see above), use exactly one of these forms:
 
 ```bash
 # Option A — from the local HEAD of the PR branch

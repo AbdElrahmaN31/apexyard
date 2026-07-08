@@ -88,3 +88,58 @@ review_marker_path() {
 
   printf '%s/%s__%s-%s.approved' "$reviews_dir" "$safe_repo" "$pr" "$role"
 }
+
+# pr_base_repo <pr> [hint_repo]
+#
+# Echoes the PR/MR's BASE (host) repo as "owner/repo" — the repo the PR *lives
+# on* and is numbered against. This is the canonical key for approval markers
+# (me2resh/apexyard#765).
+#
+# WHY THE BASE REPO IS CANONICAL
+# ------------------------------
+# The merge gates (block-unreviewed-merge.sh, require-architecture-review.sh,
+# require-design-review-for-ui.sh) derive their marker-lookup repo (`CMD_REPO`)
+# from the merge command's `--repo` value or `gh api repos/<o>/<r>/pulls/.../merge`
+# path. For a CROSS-FORK PR that is ALWAYS the base repo — you cannot merge a
+# fork's copy (`gh pr merge <n> --repo <fork>` errors; the PR doesn't live
+# there). So `merge --repo == CMD_REPO == base`. Historically the marker WRITERS
+# keyed on `headRepository` (the fork) instead, so on a cross-fork PR the marker
+# was written under the fork qualifier while the gate searched under the base →
+# a valid approval never satisfied the gate. Keying every writer on the base via
+# this helper makes writer/reader agreement STRUCTURAL, not coincidental.
+#
+# `gh pr view` exposes no baseRepository field, but the PR URL is ALWAYS rooted
+# on the base repo — parse owner/repo from it (handles GitHub /pull/ and GitLab
+# /-/merge_requests/, including nested GitLab groups). Falls back to <hint_repo>
+# (typically the headRepository value) when the URL can't be parsed or gh is
+# unavailable — so SAME-REPO PRs (base == head) resolve exactly as before and
+# this change is a provable no-op for them.
+#
+# Args:
+#   pr        — the PR/MR number.
+#   hint_repo — optional "owner/repo": the VALUE fallback when the URL can't be
+#               parsed or gh is unavailable. It is NEVER used to scope the gh
+#               query — see the WHY-UNSCOPED note in the body below.
+#
+# Output (stdout): "owner/repo", or the hint (or empty) when unresolved.
+pr_base_repo() {
+  local pr="${1:-}" hint="${2:-}" url base
+  if [ -z "$pr" ]; then
+    [ -n "$hint" ] && printf '%s' "$hint"
+    return 0
+  fi
+  # WHY UNSCOPED (me2resh/apexyard#770 review): query with NO --repo. gh's ambient
+  # base-repo resolution (from the working copy's remotes) prefers the parent /
+  # upstream — i.e. the BASE repo — which is exactly the key we want. Scoping with
+  # `--repo "$hint"` (the head/fork) would look up the base-numbered PR on the fork,
+  # where it does not exist → gh errors → empty url → the hint (fork) fallback fires
+  # → the #765 divergence is re-created on the very cross-fork path this helper
+  # exists to fix. So the hint is a VALUE fallback only, never a query scope.
+  url=$(gh pr view "$pr" --json url --jq '.url' 2>/dev/null)
+  base=$(printf '%s' "$url" | sed -E 's#^https?://[^/]+/(.+)/(pull|-/merge_requests)/[0-9].*#\1#')
+  if [ -n "$base" ] && [ "$base" != "$url" ]; then
+    printf '%s' "$base"
+  else
+    [ -n "$hint" ] && printf '%s' "$hint"
+  fi
+}

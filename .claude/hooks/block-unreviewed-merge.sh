@@ -76,6 +76,12 @@ fi
 PR_NUMBER=$(extract_pr_number "$COMMAND")
 # Also extract the repo so markers are scoped to (repo, pr) — #485.
 # CMD_REPO already parsed above; resolve via helper if blank (e.g. current-branch fallback).
+# NOTE (#765): approval markers are keyed on the PR's BASE repo. CMD_REPO is the base
+# for the sanctioned paths — the --repo value of `gh pr merge --repo` (you cannot merge
+# a fork's copy) and the `gh api .../pulls/N/merge` path. The extract_repo_from_command
+# fallback below resolves headRepository (the FORK) for a no---repo current-branch merge;
+# that residual path is NOT produced by /approve-merge (which always passes --repo), so it
+# only affects unsanctioned manual merges. Left as-is to keep the gate core untouched.
 if [ -z "$CMD_REPO" ]; then
   CMD_REPO=$(extract_repo_from_command "$COMMAND")
 fi
