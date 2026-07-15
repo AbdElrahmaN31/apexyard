@@ -26,5 +26,23 @@
     "custom_skills_dir": "../apexyard-portfolio/custom-skills",
     "custom_handbooks_dir": "../apexyard-portfolio/custom-handbooks",
     "agent_routing": "../apexyard-portfolio/agent-routing.yaml"
+  },
+  "branch": {
+    "_comment": "Extends the default type_whitelist with 'patch' — managed projects (e.g. inkrypt-web/api-central-v1) use patch/<TICKET>-<desc> branches to batch several small feature branches into one reviewed unit. Full list restated because this key replaces the default array.",
+    "type_whitelist": [
+      "feature",
+      "fix",
+      "refactor",
+      "chore",
+      "docs",
+      "test",
+      "spike",
+      "prototype",
+      "ci",
+      "build",
+      "perf",
+      "sync",
+      "patch"
+    ]
   }
 }
