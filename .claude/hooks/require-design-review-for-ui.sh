@@ -82,6 +82,10 @@ fi
 PR_NUMBER=$(extract_pr_number "$COMMAND")
 # Resolve the repo for qualified marker paths (#485).
 # CMD_REPO already resolved above; fall back via helper if still blank.
+# NOTE (#765): the design marker is keyed on the BASE repo. CMD_REPO is the base via
+# --repo / API-path / cd-target origin; the extract_repo_from_command fallback below resolves
+# headRepository (the FORK) on a no---repo current-branch merge — a residual edge affecting
+# unsanctioned merges only (/design-review + /approve-design thread the base repo). Left as-is.
 if [ -z "$CMD_REPO" ]; then
   CMD_REPO=$(extract_repo_from_command "$COMMAND")
 fi

@@ -134,6 +134,12 @@
     "on_stale": "warn"
   },
 
+  "docs_index": {
+    "_comment": "me2resh/apexyard#753 — the maintain-docs-index.sh PostToolUse hook. OFF by default: it writes a tracked docs/INDEX.md into projects/<name>/docs/ on doc edits, so adopters opt in. When enabled it (1) regenerates the per-project docs/INDEX.md (grouped, git-dated TOC) and (2) nudges when a *.md/*.html lands under projects/<name>/ outside docs/. Advisory only — never blocks.",
+    "enabled": false,
+    "index_filename": "INDEX.md"
+  },
+
   "git": {
     "protected_branches": [
       "main",
@@ -179,9 +185,8 @@
   },
 
   "tracker": {
-    "_comment": "Tracker dispatch — selects which CLI verifies that ticket-IDs reference real tickets. Default is GH (GitHub Issues via `gh issue view`), matching today's behaviour exactly. Supported `kind` values: gh, linear, jira, asana, custom, none. `view_command` is a template with `{id}` and `{owner_repo}` placeholders — the lib substitutes them and runs the result. `id_pattern` is the regex `validate-branch-name.sh` and `validate-pr-create.sh` use to shape-check ticket IDs (covers GH `#123` / `GH-123` plus enterprise prefixes like `LIN-456` / `JIRA-789` by default). Set `kind = none` to disable existence verification entirely (shape-only). See AgDR-0033 and `.claude/hooks/_lib-tracker.sh`.",
+    "_comment": "Tracker dispatch — selects which CLI verifies that ticket-IDs reference real tickets. Default is GH (GitHub Issues via `gh issue view`), matching today's behaviour exactly. Supported `kind` values: gh, glab, linear, jira, asana, custom, none. `view_command` is a template with `{id}` and `{owner_repo}` placeholders — the lib substitutes them and runs the result. It is intentionally NOT pinned here: the lib picks a KIND-AWARE built-in default (gh → `gh issue view … --json state,title,url,labels,body`; glab → `glab issue view … --output json`), so a glab/gh adopter who only sets `kind` gets the matching command without also having to set `view_command`. Pinning a default here would deep-merge over a `kind: glab` override and force the gh command (me2resh/apexyard#755). linear/jira/asana/custom adopters still set their own `view_command`. `id_pattern` is the regex `validate-branch-name.sh` and `validate-pr-create.sh` use to shape-check ticket IDs (covers GH `#123` / `GH-123` plus enterprise prefixes like `LIN-456` / `JIRA-789` by default). Set `kind = none` to disable existence verification entirely (shape-only). See AgDR-0033 and `.claude/hooks/_lib-tracker.sh`.",
     "kind": "gh",
-    "view_command": "gh issue view {id} --repo {owner_repo} --json state,title,url,labels",
     "id_pattern": "^(#[0-9]+|GH-[0-9]+|[A-Z]{2,10}-[0-9]+)$"
   },
 
@@ -203,6 +208,18 @@
     },
     "threshold": 60,
     "timeout_minutes": 90
+  },
+
+  "eval_agents": {
+    "_comment": "Config for the /eval-agents skill. corpus_dir is where docs/eval-agents/corpus/<agent>.json files live. thresholds gate the PASS/WARN verdict (non-blocking — this skill is manual/periodic measurement, not a merge gate). approve_precision_min is the headline metric per AgDR-0089 (never the blended concordance spike #825 showed hides real failures). blocking_catch_rate_min=1.0 means ANY missed BLOCKING/HIGH ground-truth defect forces WARN regardless of the aggregate score. See AgDR-0089.",
+    "corpus_dir": "docs/eval-agents/corpus",
+    "reports_dir": "docs/eval-agents/reports",
+    "thresholds": {
+      "approve_precision_min": 0.85,
+      "blocking_catch_rate_min": 1.0,
+      "overall_catch_rate_min": 0.7,
+      "false_positive_rate_max": 0.3
+    }
   },
 
   "github_projects": {

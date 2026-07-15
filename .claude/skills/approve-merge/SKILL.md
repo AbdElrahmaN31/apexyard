@@ -8,7 +8,7 @@ effort: low
 
 # /approve-merge — Record CEO Approval and Merge
 
-Writes a structured marker at `.claude/session/reviews/<owner>__<repo>__<pr>-ceo.approved` (repo-qualified path, see AgDR-0060), then runs `gh pr merge <pr> --squash --delete-branch` in the same turn. The marker contains required key/value fields (not just a bare SHA) so a raw `echo SHA > file` from the model is mechanically rejected by `block-unreviewed-merge.sh`.
+Writes a structured marker at `.claude/session/reviews/<owner>__<repo>__<pr>-ceo.approved` (repo-qualified path, see AgDR-0060), then runs the merge (`gh pr merge <pr> --squash --delete-branch`, or the `glab mr merge` equivalent on a GitLab-forge project) in the same turn via `tracker_pr_merge` — the tracker-agnostic merge adapter in `_lib-tracker.sh` (#759, mirrors `tracker_review_submit` from #758). The marker contains required key/value fields (not just a bare SHA) so a raw `echo SHA > file` from the model is mechanically rejected by `block-unreviewed-merge.sh`.
 
 This is the **mechanical enforcement** of the "plan-level 'go' is not merge approval" rule in `.claude/rules/pr-workflow.md`. The load-bearing semantic is "every merge needs an explicit per-PR approval", **not** "every merge needs two user messages."
 
@@ -106,8 +106,16 @@ MARKER_HOME="${OPS_ROOT:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
 # Source the marker path helper — repo-qualified naming (#485, AgDR-0060).
 # shellcheck source=/dev/null
 . "$MARKER_HOME/.claude/hooks/_lib-review-markers.sh"
+# The PR's HEAD (fork) repo — used ONLY as the hint/fallback for the base resolver.
 PR_REPO=$(gh pr view <pr> --json headRepository --jq '.headRepository.nameWithOwner' 2>/dev/null)
-REX=$(review_marker_path "$PR_REPO" <pr> rex "$MARKER_HOME")
+# The PR's BASE (host) repo — the canonical marker key AND the repo you merge
+# against. Rex wrote its marker under the BASE (that is what code-reviewer.md and
+# the merge gate use, #765), so read + write markers here. `pr_base_repo` parses
+# the PR URL and falls back to PR_REPO when base == head, so same-repo PRs are
+# unchanged. Use $PR_HOST_REPO as `--repo` for EVERY gh call in this skill
+# (`<owner/repo>` throughout = $PR_HOST_REPO) — you cannot merge a fork's copy.
+PR_HOST_REPO=$(pr_base_repo <pr> "$PR_REPO")
+REX=$(review_marker_path "$PR_HOST_REPO" <pr> rex "$MARKER_HOME")
 [ -f "$REX" ] && [ "$(tr -d '[:space:]' < "$REX")" = "<headRefOid from step 3>" ]
 ```
 
@@ -143,14 +151,16 @@ Optional fields the gate stores but doesn't validate:
 Use the **ops fork root** as the path anchor (NOT git toplevel — see #229 + #230 for the workspace-clone bug this avoids). Reuse the same MARKER_HOME and the `_lib-review-markers.sh` helper (already sourced in step 4):
 
 ```bash
-# (MARKER_HOME and PR_REPO already resolved in step 4 — reuse them here.)
+# (MARKER_HOME and PR_HOST_REPO already resolved in step 4 — reuse them here.)
 mkdir -p "$MARKER_HOME/.claude/session/reviews"
 ts=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
 
 # Sanitise: drop newlines, drop shell-special chars, truncate to 200.
 summary=$(echo "<user approval message>" | tr '\n' ' ' | tr -d '"`$\\' | cut -c1-200)
 
-CEO=$(review_marker_path "$PR_REPO" <pr> ceo "$MARKER_HOME")
+# CEO marker keyed on the BASE repo — same key as Rex's marker and the gate's
+# lookup (#765). Keying it on the fork would leave a cross-fork merge blocked.
+CEO=$(review_marker_path "$PR_HOST_REPO" <pr> ceo "$MARKER_HOME")
 cat > "$CEO" <<EOF
 sha=<headRefOid>
 approved_by=user
@@ -168,35 +178,62 @@ Before running the merge, check whether this is a **sync-class PR**. A PR is syn
 - Its PR title starts with `sync(` (the canonical `/release-sync` PR title prefix)
 
 ```bash
-PR_HEAD_BRANCH=$(gh pr view <pr> --repo <owner/repo> --json headRefName -q '.headRefName' 2>/dev/null)
-PR_TITLE=$(gh pr view <pr> --repo <owner/repo> --json title -q '.title' 2>/dev/null)
+PR_HEAD_BRANCH=$(gh pr view <pr> --repo "$PR_HOST_REPO" --json headRefName -q '.headRefName' 2>/dev/null)
+PR_TITLE=$(gh pr view <pr> --repo "$PR_HOST_REPO" --json title -q '.title' 2>/dev/null)
 
-MERGE_STRATEGY="--squash"  # default for all other PRs
+MERGE_STRATEGY="squash"  # default for all other PRs — bare enum, not a CLI flag (tracker_pr_merge normalises it per-forge)
 if echo "$PR_HEAD_BRANCH" | grep -qE '^sync/main-to-dev-after-' || \
    echo "$PR_TITLE" | grep -qE '^sync\('; then
-  MERGE_STRATEGY="--merge"
+  MERGE_STRATEGY="merge"
 fi
 ```
 
+Sync-class detection stays on `gh pr view` deliberately — sync PRs are a `/release-sync` concept, and `/release-sync` only ever runs against the `gh`-hosted apexyard framework fork itself, never a downstream GitLab-forge managed project. There's nothing to make forge-aware here.
+
 **Why auto-detect instead of a flag:** a `--merge-strategy` flag would require the operator to remember to pass it on every sync PR merge. Sync PRs squashed silently — the v2.2.0 incident — show that operator ceremony is not a reliable safeguard. Auto-detection makes the correct behaviour the default; an operator who wants to override can do so via the CLI directly. See `AgDR-0053`.
 
-**Why `--merge` for sync PRs:** the sync branch's top commit is a true two-parent merge commit (branch = dev, second parent = main's release squash). That two-parent relationship is the ancestry link that makes future `dev → main` release PRs conflict-free. Squash-merging discards the second parent permanently, defeating the skill's entire purpose. See `AgDR-0053`.
+**Why `merge` (not `squash`) for sync PRs:** the sync branch's top commit is a true two-parent merge commit (branch = dev, second parent = main's release squash). That two-parent relationship is the ancestry link that makes future `dev → main` release PRs conflict-free. Squash-merging discards the second parent permanently, defeating the skill's entire purpose. See `AgDR-0053`.
 
 ### 7. Run the merge — DEFAULT FLOW
 
-Unless `--no-merge` was passed, run the merge in the same turn using the strategy determined in step 6:
+Unless `--no-merge` was passed, run the merge in the same turn via the tracker-agnostic adapter — `tracker_pr_merge` in `_lib-tracker.sh` (#759, the same kind-dispatch pattern `tracker_review_submit` uses for review submission, #758) — using the strategy determined in step 6:
 
 ```bash
-gh pr merge <pr> --repo <owner/repo> ${MERGE_STRATEGY} --delete-branch
+# _lib-tracker.sh lives alongside _lib-review-markers.sh, already sourced in
+# step 4 from $MARKER_HOME (the ops fork root, not necessarily git toplevel).
+# shellcheck source=/dev/null
+. "$MARKER_HOME/.claude/hooks/_lib-tracker.sh"
+
+# tracker_pr_merge MUST be invoked as its own bare, top-level statement —
+# NEVER wrapped in `$(...)` / backticks. The merge-gate hooks fire off a
+# `Bash(tracker_pr_merge *)` matcher (#759) on the Bash tool's raw command
+# text; whether that matcher recognises a command-substitution-wrapped
+# invocation (`X=$(tracker_pr_merge ...)`) is unverified, and a merge gate
+# is not something to leave to an unverified assumption — a `$(...)`
+# substitution runs its content in a subshell, a materially different
+# construct from a plain sequential statement, so treat the two as NOT
+# equivalent for matcher purposes. Redirect the JSON result to a temp file
+# instead, and read it back in a separate step — `cat` isn't a merge
+# command, so wrapping THAT in `$(...)` is fine.
+#
+# The repo argument is $PR_HOST_REPO — the PR's BASE repo (#765). On a cross-fork
+# PR you cannot merge the fork's copy; the merge, like every other host call in
+# this skill, must target the base (`<owner/repo>` throughout = $PR_HOST_REPO).
+MERGE_RESULT_FILE=$(mktemp)
+tracker_pr_merge "$PR_HOST_REPO" "<pr>" "${MERGE_STRATEGY}" true > "$MERGE_RESULT_FILE"
+MERGE_RC=$?
+MERGE_RESULT="$(cat "$MERGE_RESULT_FILE")"
+MERGE_SHA=$(printf '%s' "$MERGE_RESULT" | jq -r '.sha // empty' 2>/dev/null)
+rm -f "$MERGE_RESULT_FILE"
 ```
 
-The merge command is gated by the existing `block-unreviewed-merge.sh`, `block-merge-on-red-ci.sh`, and `require-design-review-for-ui.sh` PreToolUse hooks. The `block-unreviewed-merge.sh` hook also includes a guard that refuses `--squash` on `sync/`-prefixed PRs — so even a direct `gh pr merge <sync-pr> --squash` will be blocked, protecting against both accidental and deliberate strategy errors. If anything else is wrong, the merge fails with the same error message the user would see if they ran `gh pr merge` themselves. The CEO marker stays on disk so the user can retry the merge after fixing the cause without re-approving.
+`tracker_pr_merge` dispatches on the project's `tracker_kind <owner/repo>` (the same per-project resolution `tracker_review_submit` and `tracker_create` use): a `gh`-kind project runs `gh pr merge <pr> --repo <owner/repo> --squash|--merge|--rebase --delete-branch`; a `glab`-kind project runs the `glab mr merge` equivalent (`--squash`/`--rebase`/no-flag-for-a-plain-merge, `--remove-source-branch`). **Note what actually gates this call:** the `gh`/`glab` command above runs *inside* `_lib-tracker.sh`, a sourced shell function — the merge-gate hooks (`block-unreviewed-merge.sh`, `block-merge-on-red-ci.sh`, `require-design-review-for-ui.sh`, `require-architecture-review.sh`) match the OUTER Bash command text this step actually submits (the `tracker_pr_merge "<owner/repo>" "<pr>" "${MERGE_STRATEGY}" true > "$MERGE_RESULT_FILE"` line above), and that text never literally contains `gh pr merge` or `glab mr merge` — those strings live inside already-sourced library code, not in this step's command. So the wrapper call itself is a dedicated, gate-recognised merge shape in its own right: `is_merge_command` and the PR/repo extractors in `_lib-extract-pr.sh` have a `tracker_pr_merge <owner/repo> <pr> ...` branch (#759), and `settings.json` carries a matching `Bash(tracker_pr_merge *)` matcher for all four hooks, alongside the existing `gh`/`glab` matchers (#764/#767/#793). The gates fire on the wrapper form directly — not by recognising the inner CLI command it happens to run, and ONLY when that form is issued as the bare top-level statement shown above — never inside a `$(...)`.
 
-After a successful merge, capture and report the merge commit SHA:
+The `block-unreviewed-merge.sh` hook also includes a guard that refuses `--squash` on `sync/`-prefixed PRs — so even a direct `gh pr merge <sync-pr> --squash` (or the glab equivalent) will be blocked, protecting against both accidental and deliberate strategy errors. If anything else is wrong, `MERGE_RC` is non-zero and the failure message is the same one the user would see running the underlying CLI directly. The CEO marker stays on disk so the user can retry the merge after fixing the cause without re-approving.
 
-```bash
-gh pr view <pr> --repo <owner/repo> --json mergeCommit -q '.mergeCommit.oid'
-```
+On success (`MERGE_RC` = 0), `MERGE_SHA` already carries the merge commit SHA — `tracker_pr_merge` resolves it itself (gh: `gh pr view --json mergeCommit`; glab: `glab mr view --output json` → `.merge_commit_sha` / `.squash_commit_sha`), so no separate reporting call is needed.
+
+`MERGE_RC` = 3 means `tracker.kind` is `none` — no host CLI is configured. The CEO marker is still written and valid; tell the user the merge itself needs to happen manually on the host, and no further `/approve-merge` re-invocation is needed once they've done it.
 
 ### 8. Move the board card to "Measurement" (opt-in)
 
@@ -223,19 +260,25 @@ board_move_card "<pr>" "measurement"
 Single-line confirmation (include the merge strategy used so the operator can see it):
 
 ```
-✓ Merged PR #<pr> as commit <sha> (strategy: --squash). Branch deleted.
+✓ Merged PR #<pr> as commit <MERGE_SHA> (strategy: squash). Branch deleted.
 ```
 
 or for sync PRs:
 
 ```
-✓ Merged PR #<pr> as commit <sha> (strategy: --merge, auto-detected sync PR — ancestry preserved). Branch deleted.
+✓ Merged PR #<pr> as commit <MERGE_SHA> (strategy: merge, auto-detected sync PR — ancestry preserved). Branch deleted.
 ```
 
-If the merge gate blocked, surface the exact error and tell the user how to retry:
+If the merge gate blocked (`MERGE_RC` non-zero and not 3), surface the exact error and tell the user how to retry:
 
 ```
-✗ Merge blocked: <reason from gate>. Marker still on disk at <CEO path from review_marker_path> — run `gh pr merge <pr> --repo <owner/repo> <strategy> --delete-branch` once the issue is fixed (no need to re-invoke /approve-merge).
+✗ Merge blocked: <reason from gate>. Marker still on disk at <CEO path from review_marker_path> — fix the issue and re-invoke `/approve-merge <pr>` (the marker is still valid, no need to re-approve).
+```
+
+If `MERGE_RC` = 3 (`tracker.kind: none`, no host CLI configured):
+
+```
+✓ CEO approval recorded for PR #<pr>. No tracker CLI is configured (tracker.kind: none) — merge <pr> manually on the host; the marker on disk covers the approval, no further /approve-merge invocation needed.
 ```
 
 ### 10. Optional: post-merge child-issue closure
