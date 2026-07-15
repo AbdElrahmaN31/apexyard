@@ -5,8 +5,7 @@
 <h1 align="center">ApexYard</h1>
 
 <p align="center">
-  <strong>Ship AI-built software like a real engineering team.</strong><br>
-  <em>Where projects get forged.</em>
+  <strong>Take agent-built code the last mile — safely to production.</strong>
 </p>
 
 <p align="center">
@@ -17,68 +16,65 @@
   <a href="https://github.com/me2resh/apexyard/stargazers"><img src="https://img.shields.io/github/stars/me2resh/apexyard?style=social" alt="Stars"></a>
 </p>
 
-A multi-project ops repo where your projects reference each other, learn from shared experience, and ship production-ready under a strict SDLC. Built for founders who ship alone, or companies standing up AI-enabled squads.
+## You built something real with AI. Then it fell apart.
 
-You don't *add* ApexYard to a project — projects get forged *inside* it. One ops repo. Every product. Shared memory. Strict gates. Production-ready MVPs.
+The first 80% flew — a working prototype in a weekend, features landing faster than you could test them. Then the context slipped. The codebase turned into a pile nobody could review, decisions vanished into chat history, and the thing you were *so close* to shipping never actually made it to production.
+
+**ApexYard is the machinery that takes agent-built code the last mile.** It wraps your AI coding agent in the discipline a real engineering team runs on: every change moves through a ticket, gets an independent review, and hits a merge gate that stays shut until a *named human* says "ship it." So the code your agent writes is actually safe to put in front of users.
+
+Concretely, it's a multi-project **ops repo**: you fork it, register your projects, and govern them all as one organisation — shared memory across the portfolio, a strict SDLC, and **42 shell hooks** that enforce the rules mechanically instead of hoping everyone remembers them. Built for founders who ship alone, and for teams standing up AI-enabled squads.
 
 Claude Code is the default driver, but the rules, hooks, and templates are plain markdown and shell. Swap the AI. Keep the forge. No SaaS. No lock-in.
 
 **Proven shipping** TypeScript + AWS Lambda backends, Next.js web apps, Chrome extensions, and native **Swift** macOS desktop apps. The stack is process and guardrails — not a language or framework lock-in.
 
-## What's Inside
+## Harness support
 
+**ApexYard was built for Claude Code** — that's where everything is native. But the part that actually *enforces* your rules is plain bash, not tied to Claude Code, so other AI coding tools can run the **exact same rules** through a small adapter. We only claim what we've watched work: as of **2026-07-09**, three tools — **opencode, pi, and Codex** — are proven, meaning a real agent turn on each was stopped by the same unmodified rule. Each needs one small setting so the agent's command actually reaches the rule. Cursor is the honest exception.
+
+| Tool | Enforces your rules? | Setup | Good to know |
+|------|----------------------|-------|--------------|
+| **Claude Code** | ✅ **Yes — natively.** Built in; the rules fire on every command. | Nothing to install — `/setup` and you're done. | On Windows, use Git Bash or WSL (the rules are bash). |
+| **opencode** | ✅ **Yes — proven.** A real agent's `git add -A` was blocked by the same rule. | `bash bin/install-opencode-adapter.sh` | Run opencode with `--auto` so the agent's command reaches the rule. |
+| **pi** | ✅ **Yes — proven.** Same, in a real pi session. | `bash bin/install-pi-adapter.sh` | Run pi with `-a` (auto-approve). pi is deliberately bare-bones — ApexYard is the governance it leaves to you. |
+| **Codex** | ✅ **Yes — proven.** Same, in a real Codex session. | `bash bin/sync-codex-adapter.sh` | Codex has to trust the rules once — `/hooks`, a one-off flag, or a user-level install. |
+| **Cursor** | 🟡 **Partly.** It blocks the command, but by *failing safe* when its rule-runner errors — not by running our rule. We don't count it as proven. | `bash bin/install-cursor-adapter.sh` | Works in the Cursor **IDE**, not the command-line version. Install is user-level (`~/.cursor/hooks.json`). |
+
+*Under the hood:* your rules stay one set of portable bash scripts, and every tool reads the **same** ones — never a separate copy that can drift out of sync. Full per-tool setup, limits, and how to add a new tool → **[`docs/harnesses/`](docs/harnesses/README.md)**.
+
+> **Not on Claude Code?** opencode, pi, and Codex run the same gates today (Cursor partially). Install your tool's adapter — the one command in the table above — and the identical rules enforce. One honest caveat before the Quick Start below: the `/setup`, `/handover`, and other `/…` commands are Claude Code **skills**, a convenience layer. The enforcement that actually matters — the gates — is what your tool's adapter delivers; on another tool you set up the same plain-text config files by hand (the steps note how).
+
+## Codex Adapter
+
+ApexYard can generate a Codex-facing adapter from the canonical `.claude/` runtime:
+
+```bash
+bin/sync-codex-adapter.sh
 ```
-apexyard/
-├── CLAUDE.md              # Stack entry point -- Claude Code reads this first
-├── onboarding.yaml        # Your company config -- fill this in to adopt the stack
-│
-├── roles/                 # AI agent role definitions (20 across 6 departments)
-│   ├── engineering/       # Backend, Frontend, QA, Platform, SRE, Tech Lead, Head of Eng
-│   ├── architecture/      # Solution Architect (Tariq)
-│   ├── product/           # Product Manager, Product Analyst, Head of Product
-│   ├── design/            # UI Designer, UX Designer, Head of Design
-│   ├── security/          # Security Auditor, Penetration Tester, Head of Security
-│   └── data/              # Data Analyst, Data Engineer, Head of Data
-│
-├── workflows/             # Development lifecycle processes
-│   ├── sdlc.md            # Full SDLC including the database-migration sub-workflow
-│   ├── code-review.md     # Code review process and standards
-│   └── deployment.md      # Environment promotion, rollback, IaC patterns
-│
-├── templates/             # Reusable document templates
-│   ├── prd.md             # Product Requirements Document
-│   ├── technical-design.md # Technical design document
-│   ├── adr.md             # Architecture Decision Record
-│   ├── agdr.md            # Agent Decision Record (AI-specific)
-│   ├── agdr-migration.md  # Migration-specific AgDR (rollback, downtime, consumers)
-│   └── architecture/      # C4 diagram templates — Context (L1) + Container (L2), Mermaid
-│
-├── .claude/               # Claude Code primitives (the runnable layer)
-│   ├── settings.json      # Hook wiring (PreToolUse, PostToolUse, SessionStart)
-│   ├── hooks/             # 40 shell scripts — ticket-first, migration gate, two-marker merge gate, red-CI block, secrets scan, branch/PR validation, leak protection, MCP-reindex advisories, upstream-drift banner
-│   ├── rules/             # 12 modular rule files imported via @.claude/rules/* (agdr-decisions, code-standards, git-conventions, leak-protection, loop-mode, parallel-work, plan-mode, pr-quality, pr-workflow, role-triggers, ticket-vocabulary, workflow-gates)
-│   ├── agents/            # 24 sub-agents — Rex (Code Reviewer), Hakim (Security Auditor), Tariq (Solution Architect), the engineering / product / design / data / security personas, plus utility agents (PR & ticket managers, dependency auditor)
-│   └── skills/            # 62 slash commands — see CLAUDE.md for the full list
-│
-├── workspace/             # Live local clones of managed projects — gitignored
-├── projects/              # Per-project committed docs (README, roadmap, AgDRs, updates)
-├── apexyard.projects.yaml.example  # Portfolio registry template
-│
-├── golden-paths/          # Reusable infra & ops templates
-│   └── pipelines/         # Drop-in GitHub Actions workflows (CI, code quality, Swift CI, security, dependency audit, PR title check, review check, SEO check)
-│
-└── docs/                  # Documentation
-    ├── getting-started.md # Setup guide
-    └── multi-project.md   # Full setup guide (fork flow, directory layout, daily workflow, FAQ)
-```
+
+The generator emits Codex-facing skills, agents, and hook wiring into `.agents/` and `.codex/` without embedding local clone paths. Gate decisions still run through the unmodified `.claude/hooks/*.sh` scripts. See [`docs/codex-adapter.md`](docs/codex-adapter.md) for the tracking policy, AgDR, and drift-check workflow.
+
+## What's inside
+
+ApexYard is a set of plain-text primitives Claude Code reads automatically — no runtime, no service:
+
+- **20 roles** across 6 departments (engineering, product, design, security, data, architecture) that activate on triggers
+- **42 shell hooks** that mechanically enforce the SDLC — ticket-first edits, a two-marker merge gate, migration gates, secrets scanning, and more
+- **64 slash-command skills** — from `/setup` and `/handover` to `/decide`, `/code-review`, `/migration`, and `/launch-check`
+- **25 sub-agents** — Rex (code review), Hakim (security), Tariq (design review), plus the department personas
+- **15 rule files**, workflow docs, and document templates (PRD, tech design, ADR, AgDR, C4 diagrams)
+
+**Full directory tree and the complete role / hook / skill / agent breakdown → [`docs/whats-inside.md`](docs/whats-inside.md).**
 
 > **Marketing site:** the site that was previously bundled here has moved to its own repo ([me2resh/apexyard-site](https://github.com/me2resh/apexyard-site)) and is deployed independently at [yard.apexscript.com](https://yard.apexscript.com).
 >
-> **For AI coding agents:** the repo root carries `AGENTS.md` — universal entry doc for Cursor / Claude Code / Aider / Cline.
+> **For AI coding agents:** the repo root carries `AGENTS.md` — universal entry doc for Cursor / Claude Code / Aider / Cline / **pi**. For harnesses that don't auto-load `CLAUDE.md` (pi chief among them), `AGENTS.md`'s "Operator governance bridge" section carries the same advisory SDLC governance `CLAUDE.md` gives Claude Code — see [`docs/harnesses/pi.md`](docs/harnesses/pi.md) for what's bridged today vs. not yet.
 
 ## Quick Start — fork and go
 
 ApexYard governs a **portfolio of repos** as one organisation. You fork apexyard, clone the fork, treat it as your "ops repo", and register every project you want under management. No `.apexyard/` symlinks, no nested installs — the fork IS the ops repo.
+
+> **On opencode, pi, or Codex?** Steps 1–3 are the same (they're just `git` / `gh`). Then install your tool's adapter — one command, see the [Harness support](#harness-support) table above — and the gates enforce on your tool. The `/setup` and `/handover` steps below are Claude Code **skills**; on another tool you set up the same plain-text config files by hand, which each step shows. The rules that get enforced are identical either way.
 
 ### 1. Star + Fork on GitHub
 
@@ -116,6 +112,8 @@ Run **`/setup`** in Claude Code. In three exchanges (describe your stack → rev
 
 Your real config lives in `onboarding.yaml`, which is **gitignored** — it stays local and is never published. `/setup` copies it from the tracked `onboarding.example.yaml` placeholder and fills it in, so nothing private is committed. (A commit-time guard blocks a filled-in `onboarding.yaml` if you ever try to add it.)
 
+*Not on Claude Code?* There's no `/setup` skill to run — do the same thing by hand: `cp onboarding.example.yaml onboarding.yaml` and fill in your company, stack, and quality bar. The gates don't depend on the skill; they read the file.
+
 ### 5. Register your projects — run `/handover`
 
 Projects join the portfolio through a skill, not hand-edited YAML. For each repo you want under management:
@@ -137,7 +135,7 @@ projects:
     status: active
 ```
 
-Register even a single repo — the portfolio skills (`/projects`, `/inbox`, `/status`) work off the registry. (Prefer to bootstrap it manually? `cp apexyard.projects.yaml.example apexyard.projects.yaml` still works.)
+Register even a single repo — the portfolio skills (`/projects`, `/inbox`, `/status`) work off the registry. (Not on Claude Code, or prefer to bootstrap it by hand? `cp apexyard.projects.yaml.example apexyard.projects.yaml` and add your repos — same registry, no skill required.)
 
 ### 6. Start working
 
@@ -158,7 +156,7 @@ Keeping a fork current — upgrade in place, when to re-fork instead, and how to
 
 **The problem**: Claude Code is powerful, but without structure it produces inconsistent results. Every team reinvents the same processes -- role definitions, review checklists, document templates, workflow gates.
 
-**The solution**: ApexYard provides that structure as a reusable, open-source stack. One config file to customize, 20 role definitions to use, battle-tested workflows to follow, and 40 shell hooks that enforce the rules mechanically.
+**The solution**: ApexYard provides that structure as a reusable, open-source stack. One config file to customize, 20 role definitions to use, battle-tested workflows to follow, and 42 shell hooks that enforce the rules mechanically.
 
 ### What makes it different
 
@@ -166,7 +164,7 @@ Keeping a fork current — upgrade in place, when to re-fork instead, and how to
 |---------|-------------------|----------------|
 | Code reviews | Ad-hoc prompts | Rex agent on every PR, SHA-bound approval marker |
 | Technical decisions | Lost in chat history | Documented as Agent Decision Records |
-| Quality gates | Hope and pray | 40 shell hooks block bad commits, forged markers, unreviewed merges |
+| Quality gates | Hope and pray | 42 shell hooks block bad commits, forged markers, unreviewed merges |
 | Merge approval | Informal "LGTM" | Two-marker gate — Rex (code) + CEO (per-PR explicit) |
 | Database migrations | Drop-column-on-Friday | Dedicated gate: labelled ticket + migration AgDR (rollback, downtime, consumers) required before schema edits |
 | Architecture docs | Nobody draws them | C4 L1 + L2 Mermaid templates + `/c4` skill generates stubs from a codebase |
@@ -175,97 +173,31 @@ Keeping a fork current — upgrade in place, when to re-fork instead, and how to
 | Role consistency | Re-explain every session | Persistent role definitions, activation-triggered |
 | Onboarding | Days of context-setting | `/setup` three-exchange config |
 
-## Roles
+## Roles, workflows & templates
 
-ApexYard includes 20 software development roles across 6 departments:
+ApexYard ships **20 roles** across 6 departments that activate on triggers, a full **SDLC** (Planning → Design → Build → Review → QA → Deploy → Monitor) with a dedicated migration sub-workflow, and reusable **document templates** (PRD, technical design, ADR, AgDR, migration AgDR, C4 diagrams).
 
-### Engineering (7 roles)
+The full role roster, workflow detail, and template catalogue live in **[`docs/whats-inside.md`](docs/whats-inside.md)**. The canonical entry point Claude Code reads is [`CLAUDE.md`](CLAUDE.md).
 
-- **Head of Engineering** -- Technical strategy, architecture standards, quality
-- **Tech Lead** -- Feature design, code review, team coordination
-- **Backend Engineer** -- Domain logic, APIs, infrastructure
-- **Frontend Engineer** -- UI components, design system, accessibility
-- **QA Engineer** -- Test strategy, automation, quality gates
-- **Platform Engineer** -- CI/CD, infrastructure as code, developer tooling
-- **Site Reliability Engineer** -- Monitoring, incidents, SLOs
+## Show you're governed by ApexYard
 
-### Architecture (1 role)
+Running your repo under ApexYard? Add a badge to its README. Every adopter repo that carries one is a backlink and a bit of social proof — and `/handover` will offer to drop it into the repos it onboards.
 
-- **Solution Architect** (Tariq) -- Independent design review before Build: NFRs, patterns, tech-debt, risk, traceability — the non-code analog of the Code Reviewer
+**Governed by** — for a repo managed under an ApexYard ops fork:
 
-### Product (3 roles)
-
-- **Head of Product** -- Roadmap, prioritization, feasibility
-- **Product Manager** -- PRDs, user stories, acceptance criteria
-- **Product Analyst** -- Market research, metrics, competitive analysis
-
-### Design (3 roles)
-
-- **Head of Design** -- Design system, UX principles, visual standards
-- **UI Designer** -- Visual design tokens, component specifications
-- **UX Designer** -- User flows, information architecture, usability
-
-### Security (3 roles)
-
-- **Head of Security** -- Security strategy, threat modeling, compliance
-- **Security Auditor** -- Static analysis, vulnerability detection, OWASP
-- **Penetration Tester** -- Active testing, exploit discovery, API security
-
-### Data (3 roles)
-
-- **Head of Data** -- Analytics strategy, data governance, reporting
-- **Data Analyst** -- SQL, dashboards, A/B testing, metrics
-- **Data Engineer** -- ETL pipelines, data modeling, data quality
-
-## Workflows
-
-### Software Development Lifecycle (SDLC)
-
-```
-Planning --> Design --> Build --> Review --> QA --> Deploy --> Monitor
+```markdown
+[![Governed by ApexYard](https://img.shields.io/badge/governed_by-ApexYard-2F6DF6?style=flat-square)](https://github.com/me2resh/apexyard)
 ```
 
-Each phase has entry criteria, activities, exit criteria, and quality gates. See [`workflows/sdlc.md`](workflows/sdlc.md) for the full flow.
+[![Governed by ApexYard](https://img.shields.io/badge/governed_by-ApexYard-2F6DF6?style=flat-square)](https://github.com/me2resh/apexyard)
 
-### Code Review Process
+**Built with** — for a project built out through the ApexYard workflow:
 
-Structured review with:
+```markdown
+[![Built with ApexYard](https://img.shields.io/badge/built_with-ApexYard-2F6DF6?style=flat-square)](https://github.com/me2resh/apexyard)
+```
 
-- Author responsibilities and PR description format
-- Reviewer checklist (architecture, security, testing, performance)
-- Feedback severity levels (blocking, suggestion, question)
-- Response time targets
-- Rex (code-reviewer agent) auto-runs on every PR; human reviewer activates per role triggers
-
-### Deployment Process
-
-- Infrastructure as Code patterns
-- CI/CD pipeline stages
-- Environment promotion (staging → production)
-- Rollback procedures
-
-See [`workflows/deployment.md`](workflows/deployment.md) for the full flow.
-
-### Database Migration Sub-Workflow
-
-Migrations are high-blast-radius work and get their own gate (workflow gate 3a). Any edit to `migrate-*.{ts,js,py,sql}`, `**/migrations/**`, `prisma/schema.prisma`, `alembic/versions/*`, or similar requires:
-
-1. A labelled `migration` ticket
-2. A matching migration AgDR that documents rollback, estimated downtime, cross-service consumers, data volume, testing plan, observability
-
-The `/migration` skill creates both artefacts in one guided flow; the `require-migration-ticket.sh` hook blocks edits to migration paths until they exist.
-
-## Templates
-
-| Template | Purpose |
-|----------|---------|
-| PRD | Product Requirements Document with user stories, acceptance criteria |
-| Technical Design | Architecture, domain model, API design, implementation plan |
-| ADR | Architecture Decision Record for significant technical decisions |
-| AgDR | Agent Decision Record — AI-specific decision tracking |
-| Migration AgDR | Migration-specific AgDR — rollback plan, downtime estimate, consumers, observability |
-| C4 Context (L1) | System context Mermaid diagram — external actors + system boundary |
-| C4 Container (L2) | Container Mermaid diagram — deployable units inside the system |
+[![Built with ApexYard](https://img.shields.io/badge/built_with-ApexYard-2F6DF6?style=flat-square)](https://github.com/me2resh/apexyard)
 
 ## Customization
 
@@ -302,6 +234,7 @@ Thanks to everyone who has helped forge ApexYard:
     <td align="center"><a href="https://github.com/AbdElrahmaN31"><img src="https://github.com/AbdElrahmaN31.png?size=100" width="64" alt="AbdElrahmaN31"><br><sub>AbdElrahmaN31</sub></a></td>
     <td align="center"><a href="https://github.com/HishamM1"><img src="https://github.com/HishamM1.png?size=100" width="64" alt="HishamM1"><br><sub>HishamM1</sub></a></td>
     <td align="center"><a href="https://github.com/tifa64"><img src="https://github.com/tifa64.png?size=100" width="64" alt="tifa64"><br><sub>tifa64</sub></a></td>
+    <td align="center"><a href="https://github.com/hossam-96"><img src="https://github.com/hossam-96.png?size=100" width="64" alt="hossam-96"><br><sub>hossam-96</sub></a></td>
   </tr>
 </table>
 

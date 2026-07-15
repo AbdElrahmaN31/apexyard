@@ -79,11 +79,15 @@ done
 MARKER_HOME="${OPS_ROOT:-$REPO_ROOT}"
 # shellcheck source=/dev/null
 . "$MARKER_HOME/.claude/hooks/_lib-review-markers.sh"
-# Prefer the repo resolved in step 1 (the base repo the PR lives in — the slug
-# the gate derives from the merge cd-target, #687). Fall back to headRepository
-# only when REPO is unknown (single-fork / same-repo case).
-PR_REPO="${REPO:-$(gh pr view <pr> --json headRepository --jq '.headRepository.nameWithOwner' 2>/dev/null)}"
-REX=$(review_marker_path "$PR_REPO" <pr> rex "$MARKER_HOME")
+# Base (host) repo — the canonical marker key: it matches Rex's marker AND the
+# merge gate's lookup (which keys on the merge command's base repo, #765). Prefer
+# the repo resolved in step 1 (already the base, #687) as the hint; else
+# headRepository. pr_base_repo confirms the base from the PR URL and falls back to
+# the hint when base == head, so same-repo PRs are unchanged.
+HINT_REPO="${REPO:-$(gh pr view <pr> --json headRepository --jq '.headRepository.nameWithOwner' 2>/dev/null)}"
+PR_HOST_REPO=$(pr_base_repo <pr> "$HINT_REPO")
+PR_REPO="$PR_HOST_REPO"
+REX=$(review_marker_path "$PR_HOST_REPO" <pr> rex "$MARKER_HOME")
 [ -f "$REX" ] && [ "$(tr -d '[:space:]' < "$REX")" = "$(git rev-parse HEAD)" ]
 ```
 
@@ -102,9 +106,10 @@ gh pr diff <pr> --name-only | grep -qE '\.(tsx|jsx|vue|svelte|css|scss|sass|less
 Use the repo-qualified path via `_lib-review-markers.sh` (already sourced in step 4):
 
 ```bash
-# (MARKER_HOME and PR_REPO already resolved in step 4 — reuse them here.)
+# (MARKER_HOME and PR_HOST_REPO already resolved in step 4 — reuse them here.)
 mkdir -p "$MARKER_HOME/.claude/session/reviews"
-DESIGN=$(review_marker_path "$PR_REPO" <pr> design "$MARKER_HOME")
+# design marker keyed on the BASE repo — same key as Rex's marker + the gate (#765).
+DESIGN=$(review_marker_path "$PR_HOST_REPO" <pr> design "$MARKER_HOME")
 git rev-parse HEAD > "$DESIGN"
 ```
 
